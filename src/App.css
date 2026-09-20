@@ -64,7 +64,7 @@ body {
 }
 
 .log {
-  margin-top: 8px;
+  margin: 0;
   max-height: 260px;
   overflow: auto;
   background: #14110f;

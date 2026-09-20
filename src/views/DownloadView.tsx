@@ -6,6 +6,7 @@ import {
   Card,
   Checkbox,
   Col,
+  Collapse,
   Form,
   Input,
   Progress,
@@ -256,10 +257,25 @@ export function DownloadView({
         />
       )}
 
-      <Typography.Text type="secondary">日志</Typography.Text>
-      <pre className="log" ref={logRef}>
-        {logs.length ? logs.join("\n") : "等待开始…"}
-      </pre>
+      <Collapse
+        bordered={false}
+        size="small"
+        items={[
+          {
+            key: "logs",
+            label: (
+              <Typography.Text type="secondary">
+                日志{logs.length ? `（${logs.length}）` : ""}
+              </Typography.Text>
+            ),
+            children: (
+              <pre className="log" ref={logRef}>
+                {logs.length ? logs.join("\n") : "等待开始…"}
+              </pre>
+            ),
+          },
+        ]}
+      />
     </Card>
   );
 }
