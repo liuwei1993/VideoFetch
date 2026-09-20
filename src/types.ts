@@ -28,3 +28,14 @@ export type DownloadFinished = {
 export type DownloadError = {
   message: string;
 };
+
+export type BatchItemMeta = { id: string; title: string };
+export type DownloadBatchStarted = { total: number; items: BatchItemMeta[] };
+export type DownloadItemStarted = { index: number; id: string };
+export type DownloadItemFinished = { index: number; id: string; path: string };
+export type DownloadItemError = { index: number; id: string; message: string };
+export type DownloadBatchFinished = {
+  succeeded: number;
+  failed: number;
+  cancelled: number;
+};

@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
@@ -28,6 +28,56 @@ pub struct DownloadFinished {
 #[derive(Clone, Serialize)]
 pub struct DownloadError {
     pub message: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchItemMeta {
+    pub id: String,
+    pub title: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DownloadBatchStarted {
+    pub total: usize,
+    pub items: Vec<BatchItemMeta>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DownloadItemStarted {
+    pub index: usize,
+    pub id: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DownloadItemFinished {
+    pub index: usize,
+    pub id: String,
+    pub path: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DownloadItemError {
+    pub index: usize,
+    pub id: String,
+    pub message: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DownloadBatchFinished {
+    pub succeeded: usize,
+    pub failed: usize,
+    pub cancelled: usize,
+}
+
+enum SessionOutcome {
+    Single(PathBuf),
+    Batch,
 }
 
 #[derive(Debug, Deserialize)]
@@ -356,11 +406,32 @@ pub fn start_download(app: AppHandle, args: StartDownloadArgs) -> Result<(), Str
 
     let app_for_job = app.clone();
     std::thread::spawn(move || {
-        let result = run_download(&app_for_job, &url, &category, &quality, audio_only);
+        let is_batch = site::is_bilibili_collection_url(&url);
+        let session = (|| -> Result<SessionOutcome, String> {
+            if is_batch {
+                run_batch_download(
+                    &app_for_job,
+                    &url,
+                    &category,
+                    &quality,
+                    audio_only,
+                )?;
+                Ok(SessionOutcome::Batch)
+            } else {
+                Ok(SessionOutcome::Single(run_download(
+                    &app_for_job,
+                    &url,
+                    &category,
+                    &quality,
+                    audio_only,
+                )?))
+            }
+        })();
         clear_child_pids();
         DOWNLOAD_RUNNING.store(false, Ordering::SeqCst);
-        match result {
-            Ok(path) => {
+        match session {
+            Ok(SessionOutcome::Batch) => {}
+            Ok(SessionOutcome::Single(path)) => {
                 let _ = app_for_job.emit(
                     "download-finished",
                     DownloadFinished {
@@ -563,6 +634,118 @@ fn run_download(
         .ok_or_else(|| {
             "下载完成但未找到可用成品（可能音视频合并失败；请确认已安装 ffmpeg 后重试）".to_string()
         })
+}
+
+fn run_batch_download(
+    app: &AppHandle,
+    page_url: &str,
+    category: &str,
+    quality: &str,
+    audio_only: bool,
+) -> Result<(), String> {
+    let settings = settings::load_settings(app)?;
+    let items = crate::playlist::expand_playlist(page_url, &settings)?;
+    let total = items.len();
+    let _ = app.emit(
+        "download-batch-started",
+        DownloadBatchStarted {
+            total,
+            items: items
+                .iter()
+                .map(|i| BatchItemMeta {
+                    id: i.id.clone(),
+                    title: i.title.clone(),
+                })
+                .collect(),
+        },
+    );
+
+    let concurrency = settings::clamp_max_concurrent(settings.max_concurrent_downloads) as usize;
+    let next = Arc::new(AtomicUsize::new(0));
+    let succeeded = Arc::new(AtomicUsize::new(0));
+    let failed = Arc::new(AtomicUsize::new(0));
+    let items = Arc::new(items);
+
+    let worker_count = concurrency.max(1).min(total);
+    let mut handles = Vec::with_capacity(worker_count);
+
+    for _ in 0..worker_count {
+        let app = app.clone();
+        let next = next.clone();
+        let items = items.clone();
+        let succeeded = succeeded.clone();
+        let failed = failed.clone();
+        let category = category.to_string();
+        let quality = quality.to_string();
+        handles.push(std::thread::spawn(move || {
+            loop {
+                if DOWNLOAD_CANCELLED.load(Ordering::SeqCst) {
+                    break;
+                }
+                let index = next.fetch_add(1, Ordering::SeqCst);
+                if index >= items.len() {
+                    break;
+                }
+                let item = &items[index];
+                let _ = app.emit(
+                    "download-item-started",
+                    DownloadItemStarted {
+                        index,
+                        id: item.id.clone(),
+                    },
+                );
+                let url = crate::playlist::bilibili_video_url(&item.id);
+                match run_download(&app, &url, &category, &quality, audio_only) {
+                    Ok(path) => {
+                        succeeded.fetch_add(1, Ordering::SeqCst);
+                        let _ = app.emit(
+                            "download-item-finished",
+                            DownloadItemFinished {
+                                index,
+                                id: item.id.clone(),
+                                path: path.to_string_lossy().into_owned(),
+                            },
+                        );
+                    }
+                    Err(message) => {
+                        if message.contains("已停止") {
+                            continue;
+                        }
+                        failed.fetch_add(1, Ordering::SeqCst);
+                        let _ = app.emit(
+                            "download-item-error",
+                            DownloadItemError {
+                                index,
+                                id: item.id.clone(),
+                                message,
+                            },
+                        );
+                    }
+                }
+            }
+        }));
+    }
+
+    for h in handles {
+        let _ = h.join();
+    }
+
+    let succeeded_n = succeeded.load(Ordering::SeqCst);
+    let failed_n = failed.load(Ordering::SeqCst);
+    let cancelled = if DOWNLOAD_CANCELLED.load(Ordering::SeqCst) {
+        total.saturating_sub(succeeded_n + failed_n)
+    } else {
+        0
+    };
+    let _ = app.emit(
+        "download-batch-finished",
+        DownloadBatchFinished {
+            succeeded: succeeded_n,
+            failed: failed_n,
+            cancelled,
+        },
+    );
+    Ok(())
 }
 
 fn shorten_output_path(path: &Path) -> PathBuf {
