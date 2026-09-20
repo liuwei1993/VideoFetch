@@ -18,6 +18,16 @@ pub fn detect_site(url: &str) -> Site {
     }
 }
 
+/// Bilibili space season/series collection pages (not single BV pages).
+pub fn is_bilibili_collection_url(url: &str) -> bool {
+    let lower = url.to_lowercase();
+    if !(lower.contains("bilibili.com") || lower.contains("b23.tv")) {
+        return false;
+    }
+    // space.bilibili.com/<mid>/lists/<id>
+    lower.contains("space.bilibili.com") && lower.contains("/lists/")
+}
+
 /// Prefer H.264 (avc1) + AAC (mp4a) so outputs play on phones (many Huawei /
 /// HarmonyOS players lack AV1/VP9). Fall back to best available if needed.
 pub fn format_selector(quality: &str) -> String {
@@ -62,6 +72,26 @@ mod tests {
             Site::Bilibili
         );
         assert_eq!(detect_site("https://b23.tv/xyz"), Site::Bilibili);
+    }
+
+    #[test]
+    fn detect_bilibili_collection_urls() {
+        assert!(is_bilibili_collection_url(
+            "https://space.bilibili.com/7504289/lists/6254946?type=season"
+        ));
+        assert!(is_bilibili_collection_url(
+            "https://space.bilibili.com/7504289/lists/6254946?type=series"
+        ));
+        assert!(is_bilibili_collection_url(
+            "https://SPACE.BILIBILI.COM/1/lists/2"
+        ));
+        assert!(!is_bilibili_collection_url(
+            "https://www.bilibili.com/video/BV1xx411c7mD"
+        ));
+        assert!(!is_bilibili_collection_url("https://b23.tv/abcdef"));
+        assert!(!is_bilibili_collection_url(
+            "https://www.youtube.com/playlist?list=PLxxx"
+        ));
     }
 
     #[test]
