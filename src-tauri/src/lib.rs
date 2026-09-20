@@ -1,5 +1,6 @@
 mod download;
 mod library;
+mod playlist;
 mod settings;
 mod site;
 
