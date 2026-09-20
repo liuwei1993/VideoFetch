@@ -12,6 +12,8 @@ pub struct Settings {
     pub youtube_proxy: String,
     pub bilibili_use_proxy: bool,
     pub cookie_file: Option<String>,
+    #[serde(default = "default_max_concurrent")]
+    pub max_concurrent_downloads: u32,
 }
 
 impl Default for Settings {
@@ -23,8 +25,17 @@ impl Default for Settings {
             youtube_proxy: "http://127.0.0.1:57890".into(),
             bilibili_use_proxy: false,
             cookie_file: None,
+            max_concurrent_downloads: 5,
         }
     }
+}
+
+fn default_max_concurrent() -> u32 {
+    5
+}
+
+pub fn clamp_max_concurrent(n: u32) -> u32 {
+    n.clamp(1, 10)
 }
 
 pub fn expand_path(path: &str) -> PathBuf {
@@ -99,5 +110,32 @@ mod tests {
         assert_eq!(back.default_quality, "720");
         assert_eq!(back.last_category, "未分类");
         assert!(!back.bilibili_use_proxy);
+    }
+
+    #[test]
+    fn default_max_concurrent_is_five() {
+        let s = Settings::default();
+        assert_eq!(s.max_concurrent_downloads, 5);
+    }
+
+    #[test]
+    fn clamp_max_concurrent() {
+        assert_eq!(super::clamp_max_concurrent(0), 1);
+        assert_eq!(super::clamp_max_concurrent(5), 5);
+        assert_eq!(super::clamp_max_concurrent(99), 10);
+    }
+
+    #[test]
+    fn missing_max_concurrent_deserializes_to_default() {
+        let raw = r#"{
+      "library_root": "~/videofetch",
+      "default_quality": "720",
+      "last_category": "未分类",
+      "youtube_proxy": "http://127.0.0.1:57890",
+      "bilibili_use_proxy": false,
+      "cookie_file": null
+    }"#;
+        let s: Settings = serde_json::from_str(raw).unwrap();
+        assert_eq!(s.max_concurrent_downloads, 5);
     }
 }

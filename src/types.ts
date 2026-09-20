@@ -5,6 +5,7 @@ export type Settings = {
   youtube_proxy: string;
   bilibili_use_proxy: boolean;
   cookie_file: string | null;
+  max_concurrent_downloads: number;
 };
 
 export type VideoItem = {

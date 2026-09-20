@@ -22,7 +22,9 @@ fn get_settings(app: tauri::AppHandle) -> Result<Settings, String> {
 }
 
 #[tauri::command]
-fn save_settings(app: tauri::AppHandle, settings: Settings) -> Result<(), String> {
+fn save_settings(app: tauri::AppHandle, mut settings: Settings) -> Result<(), String> {
+    settings.max_concurrent_downloads =
+        settings::clamp_max_concurrent(settings.max_concurrent_downloads);
     let root = settings::library_root_path(&settings);
     library::ensure_library_root(&root)?;
     settings::save_settings(&app, &settings)
