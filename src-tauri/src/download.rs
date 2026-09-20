@@ -453,6 +453,9 @@ fn run_download(
         if let Some(p) = guard.clone() {
             let path = PathBuf::from(&p);
             if path.exists() {
+                if let Err(msg) = validate_playable_output(&path, audio_only) {
+                    return Err(msg);
+                }
                 return Ok(path);
             }
         }
@@ -463,7 +466,65 @@ fn run_download(
         .into_iter()
         .max_by_key(|v| v.size)
         .map(|v| PathBuf::from(v.path))
-        .ok_or_else(|| "下载完成但未找到输出文件".to_string())
+        .ok_or_else(|| {
+            "下载完成但未找到可用成品（可能音视频合并失败；请确认已安装 ffmpeg 后重试）".to_string()
+        })
+}
+
+fn validate_playable_output(path: &Path, audio_only: bool) -> Result<(), String> {
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default();
+    if library::looks_like_ytdlp_fragment(name) {
+        return Err(format!(
+            "下载未合并完成（残留分片 {name}）。请确认已安装 ffmpeg，并重新下载。"
+        ));
+    }
+    if audio_only {
+        return Ok(());
+    }
+    // Soft check via ffprobe when available: require a video stream.
+    let Ok(out) = Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=codec_name",
+            "-of",
+            "csv=p=0",
+            path.to_str().unwrap_or(""),
+        ])
+        .output()
+    else {
+        return Ok(());
+    };
+    if !out.status.success() || String::from_utf8_lossy(&out.stdout).trim().is_empty() {
+        return Err("成品缺少视频轨，下载可能不完整，请重试。".into());
+    }
+    let audio = Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "a:0",
+            "-show_entries",
+            "stream=codec_name",
+            "-of",
+            "csv=p=0",
+            path.to_str().unwrap_or(""),
+        ])
+        .output();
+    if let Ok(a) = audio {
+        if a.status.success() && String::from_utf8_lossy(&a.stdout).trim().is_empty() {
+            return Err(
+                "成品没有音轨（常见于合并失败）。请确认 ffmpeg 可用后重新下载。".into(),
+            );
+        }
+    }
+    Ok(())
 }
 
 pub fn is_download_running() -> bool {

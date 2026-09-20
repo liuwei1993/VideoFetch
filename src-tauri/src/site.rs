@@ -18,11 +18,19 @@ pub fn detect_site(url: &str) -> Site {
     }
 }
 
+/// Prefer H.264 (avc1) + AAC (mp4a) so outputs play on phones (many Huawei /
+/// HarmonyOS players lack AV1/VP9). Fall back to best available if needed.
 pub fn format_selector(quality: &str) -> String {
     match quality {
-        "1080" => "bv*[height<=1080]+ba/b[height<=1080]".into(),
-        "best" => "bv*+ba/b".into(),
-        _ => "bv*[height<=720]+ba/b[height<=720]".into(),
+        "1080" => {
+            "bv*[height<=1080][vcodec^=avc1]+ba[acodec^=mp4a]/b[height<=1080][vcodec^=avc1]/bv*[height<=1080]+ba/b[height<=1080]"
+                .into()
+        }
+        "best" => "bv*[vcodec^=avc1]+ba[acodec^=mp4a]/b[vcodec^=avc1]/bv*+ba/b".into(),
+        _ => {
+            "bv*[height<=720][vcodec^=avc1]+ba[acodec^=mp4a]/b[height<=720][vcodec^=avc1]/bv*[height<=720]+ba/b[height<=720]"
+                .into()
+        }
     }
 }
 
@@ -58,7 +66,10 @@ mod tests {
 
     #[test]
     fn format_and_proxy() {
-        assert!(format_selector("720").contains("720"));
+        let sel = format_selector("720");
+        assert!(sel.contains("720"));
+        assert!(sel.contains("avc1"));
+        assert!(sel.contains("mp4a"));
         let mut s = Settings::default();
         assert!(proxy_for(Site::Youtube, &s).is_some());
         assert!(proxy_for(Site::Bilibili, &s).is_none());

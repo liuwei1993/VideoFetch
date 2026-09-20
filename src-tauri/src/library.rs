@@ -103,9 +103,36 @@ pub fn delete_category(root: &Path, name: &str, force: bool) -> Result<(), Strin
 }
 
 fn is_video(path: &Path) -> bool {
+    if path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("part"))
+    {
+        return false;
+    }
+    // Skip unfinished yt-dlp stream fragments like `title [id].f398.mp4`
+    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+        if looks_like_ytdlp_fragment(name) {
+            return false;
+        }
+    }
     path.extension()
         .and_then(|e| e.to_str())
         .map(|e| VIDEO_EXTS.iter().any(|x| x.eq_ignore_ascii_case(e)))
+        .unwrap_or(false)
+}
+
+pub fn looks_like_ytdlp_fragment(name: &str) -> bool {
+    // e.g. "... [aO-hLnBsVL4].f398.mp4" or "...f251.webm"
+    let Some(stem) = Path::new(name).file_stem().and_then(|s| s.to_str()) else {
+        return false;
+    };
+    stem.rsplit_once('.')
+        .map(|(_, last)| {
+            last.len() >= 2
+                && last.as_bytes()[0].eq_ignore_ascii_case(&b'f')
+                && last[1..].bytes().all(|b| b.is_ascii_digit())
+        })
         .unwrap_or(false)
 }
 
