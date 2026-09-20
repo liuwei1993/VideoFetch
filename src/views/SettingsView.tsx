@@ -1,4 +1,17 @@
 import { useEffect, useState } from "react";
+import {
+  Alert,
+  Button,
+  Card,
+  Form,
+  Input,
+  Select,
+  Spin,
+  Switch,
+  Typography,
+  message,
+} from "antd";
+import { SaveOutlined } from "@ant-design/icons";
 import { api } from "../api";
 import type { Settings } from "../types";
 
@@ -8,95 +21,120 @@ type Props = {
 
 export function SettingsView({ onSaved }: Props) {
   const [settings, setSettings] = useState<Settings | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     api.getSettings().then(setSettings).catch((e) => setError(String(e)));
   }, []);
 
-  if (!settings) {
-    return (
-      <section className="panel">
-        <h2>设置</h2>
-        {error ? <p className="error">{error}</p> : <p>加载中…</p>}
-      </section>
-    );
-  }
-
   async function onSave() {
     if (!settings) return;
     setError(null);
-    setMessage(null);
+    setSaving(true);
     try {
       await api.saveSettings(settings);
-      setMessage("已保存");
+      message.success("设置已保存");
       onSaved();
     } catch (e) {
       setError(String(e));
+    } finally {
+      setSaving(false);
     }
   }
 
+  if (!settings) {
+    return (
+      <Card title="设置" bordered={false} className="page-card">
+        {error ? (
+          <Alert type="error" showIcon message={error} />
+        ) : (
+          <Spin tip="加载中…" />
+        )}
+      </Card>
+    );
+  }
+
   return (
-    <section className="panel">
-      <h2>设置</h2>
-      <label className="field">
-        <span>库根目录</span>
-        <input
-          value={settings.library_root}
-          onChange={(e) => setSettings({ ...settings, library_root: e.target.value })}
-        />
-      </label>
-      <label className="field">
-        <span>默认清晰度</span>
-        <select
-          value={settings.default_quality}
-          onChange={(e) =>
-            setSettings({ ...settings, default_quality: e.target.value })
-          }
+    <Card title="设置" bordered={false} className="page-card">
+      <Form layout="vertical" style={{ maxWidth: 560 }}>
+        <Form.Item label="库根目录" extra="支持 ~ 表示用户家目录">
+          <Input
+            value={settings.library_root}
+            onChange={(e) =>
+              setSettings({ ...settings, library_root: e.target.value })
+            }
+          />
+        </Form.Item>
+
+        <Form.Item label="默认清晰度">
+          <Select
+            value={settings.default_quality}
+            onChange={(value) =>
+              setSettings({ ...settings, default_quality: value })
+            }
+            options={[
+              { value: "720", label: "720p" },
+              { value: "1080", label: "1080p" },
+              { value: "best", label: "最高" },
+            ]}
+          />
+        </Form.Item>
+
+        <Form.Item label="YouTube 代理" extra="Bilibili 默认直连，可在下方单独开启代理">
+          <Input
+            value={settings.youtube_proxy}
+            onChange={(e) =>
+              setSettings({ ...settings, youtube_proxy: e.target.value })
+            }
+            placeholder="http://127.0.0.1:57890"
+          />
+        </Form.Item>
+
+        <Form.Item label="Bilibili 也走代理">
+          <Switch
+            checked={settings.bilibili_use_proxy}
+            onChange={(checked) =>
+              setSettings({ ...settings, bilibili_use_proxy: checked })
+            }
+          />
+        </Form.Item>
+
+        <Form.Item label="Cookie 文件" extra="预留项，当前下载流程暂不接入">
+          <Input
+            value={settings.cookie_file ?? ""}
+            onChange={(e) =>
+              setSettings({
+                ...settings,
+                cookie_file: e.target.value.trim() ? e.target.value : null,
+              })
+            }
+            placeholder="可选路径"
+          />
+        </Form.Item>
+
+        <Typography.Paragraph type="secondary">
+          上次分类：{settings.last_category || "未分类"}
+        </Typography.Paragraph>
+
+        {error && (
+          <Alert
+            type="error"
+            showIcon
+            message={error}
+            style={{ marginBottom: 16 }}
+          />
+        )}
+
+        <Button
+          type="primary"
+          icon={<SaveOutlined />}
+          loading={saving}
+          onClick={onSave}
         >
-          <option value="720">720p</option>
-          <option value="1080">1080p</option>
-          <option value="best">最高</option>
-        </select>
-      </label>
-      <label className="field">
-        <span>YouTube 代理</span>
-        <input
-          value={settings.youtube_proxy}
-          onChange={(e) =>
-            setSettings({ ...settings, youtube_proxy: e.target.value })
-          }
-          placeholder="http://127.0.0.1:57890"
-        />
-      </label>
-      <label className="field checkbox">
-        <input
-          type="checkbox"
-          checked={settings.bilibili_use_proxy}
-          onChange={(e) =>
-            setSettings({ ...settings, bilibili_use_proxy: e.target.checked })
-          }
-        />
-        <span>Bilibili 也走代理</span>
-      </label>
-      <label className="field">
-        <span>Cookie 文件（预留）</span>
-        <input
-          value={settings.cookie_file ?? ""}
-          onChange={(e) =>
-            setSettings({
-              ...settings,
-              cookie_file: e.target.value.trim() ? e.target.value : null,
-            })
-          }
-          placeholder="可选，第一版下载暂不接入"
-        />
-      </label>
-      <p className="muted">上次分类：{settings.last_category}</p>
-      <button onClick={onSave}>保存</button>
-      {message && <p className="ok">{message}</p>}
-      {error && <p className="error">{error}</p>}
-    </section>
+          保存
+        </Button>
+      </Form>
+    </Card>
   );
 }

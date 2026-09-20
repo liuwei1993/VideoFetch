@@ -1,5 +1,20 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
+import {
+  Alert,
+  Button,
+  Card,
+  Checkbox,
+  Col,
+  Form,
+  Input,
+  Progress,
+  Row,
+  Select,
+  Space,
+  Typography,
+} from "antd";
+import { CloudDownloadOutlined, StopOutlined } from "@ant-design/icons";
 import { api } from "../api";
 import type { DownloadError, DownloadFinished, DownloadProgress } from "../types";
 
@@ -20,11 +35,15 @@ export function DownloadView({
   const [category, setCategory] = useState(defaultCategory);
   const [newCategory, setNewCategory] = useState("");
   const [quality, setQuality] = useState(defaultQuality);
+  const [audioOnly, setAudioOnly] = useState(false);
   const [percent, setPercent] = useState<number | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [donePath, setDonePath] = useState<string | null>(null);
+  const logRef = useRef<HTMLPreElement>(null);
+  const onCategoriesChangedRef = useRef(onCategoriesChanged);
+  onCategoriesChangedRef.current = onCategoriesChanged;
 
   useEffect(() => {
     setCategory(defaultCategory);
@@ -33,6 +52,12 @@ export function DownloadView({
   useEffect(() => {
     setQuality(defaultQuality);
   }, [defaultQuality]);
+
+  useEffect(() => {
+    if (logRef.current) {
+      logRef.current.scrollTop = logRef.current.scrollHeight;
+    }
+  }, [logs]);
 
   useEffect(() => {
     let cancelled = false;
@@ -52,7 +77,7 @@ export function DownloadView({
         setBusy(false);
         setDonePath(e.payload.path);
         setPercent(100);
-        onCategoriesChanged();
+        onCategoriesChangedRef.current();
       });
       const u3 = await listen<DownloadError>("download-error", (e) => {
         if (cancelled) return;
@@ -77,7 +102,6 @@ export function DownloadView({
       cancelled = true;
       unsubs.forEach((u) => u());
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- subscribe once; avoid dropping events on parent refresh
   }, []);
 
   async function ensureCategorySelected(): Promise<string> {
@@ -100,7 +124,7 @@ export function DownloadView({
     try {
       const cat = await ensureCategorySelected();
       setBusy(true);
-      await api.startDownload(url.trim(), cat, quality);
+      await api.startDownload(url.trim(), cat, quality, audioOnly);
     } catch (e) {
       setBusy(false);
       setError(String(e));
@@ -117,76 +141,125 @@ export function DownloadView({
   }
 
   return (
-    <section className="panel">
-      <h2>下载</h2>
-      <label className="field">
-        <span>视频链接</span>
-        <input
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          placeholder="YouTube / Bilibili URL"
-          disabled={busy}
-        />
-      </label>
-
-      <div className="row-fields">
-        <label className="field">
-          <span>分类</span>
-          <select
-            value={category}
-            onChange={(e) => setCategory(e.target.value)}
-            disabled={busy}
-          >
-            {categories.map((c) => (
-              <option key={c} value={c}>
-                {c}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="field">
-          <span>或新建分类</span>
-          <input
-            value={newCategory}
-            onChange={(e) => setNewCategory(e.target.value)}
-            placeholder="新分类名"
-            disabled={busy}
+    <Card title="下载视频" bordered={false} className="page-card">
+      <Form layout="vertical" disabled={busy}>
+        <Form.Item label="视频链接" required>
+          <Input
+            size="large"
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            placeholder="粘贴 YouTube / Bilibili 链接"
+            allowClear
           />
-        </label>
-        <label className="field">
-          <span>清晰度</span>
-          <select
-            value={quality}
-            onChange={(e) => setQuality(e.target.value)}
-            disabled={busy}
-          >
-            <option value="720">720p</option>
-            <option value="1080">1080p</option>
-            <option value="best">最高</option>
-          </select>
-        </label>
-      </div>
+        </Form.Item>
 
-      <div className="actions-row">
-        <button disabled={busy || !url.trim()} onClick={onStart}>
+        <Row gutter={16}>
+          <Col xs={24} md={8}>
+            <Form.Item label="分类">
+              <Select
+                size="large"
+                value={category}
+                onChange={setCategory}
+                options={categories.map((c) => ({ value: c, label: c }))}
+              />
+            </Form.Item>
+          </Col>
+          <Col xs={24} md={8}>
+            <Form.Item label="或新建分类">
+              <Input
+                size="large"
+                value={newCategory}
+                onChange={(e) => setNewCategory(e.target.value)}
+                placeholder="新分类名"
+                allowClear
+              />
+            </Form.Item>
+          </Col>
+          <Col xs={24} md={8}>
+            <Form.Item label="清晰度">
+              <Select
+                size="large"
+                value={quality}
+                onChange={setQuality}
+                disabled={audioOnly}
+                options={[
+                  { value: "720", label: "720p" },
+                  { value: "1080", label: "1080p" },
+                  { value: "best", label: "最高" },
+                ]}
+              />
+            </Form.Item>
+          </Col>
+        </Row>
+
+        <Form.Item style={{ marginBottom: 16 }}>
+          <Checkbox
+            checked={audioOnly}
+            onChange={(e) => setAudioOnly(e.target.checked)}
+          >
+            仅下载音频 (MP3)
+          </Checkbox>
+        </Form.Item>
+      </Form>
+
+      <Space wrap style={{ marginBottom: 16 }}>
+        <Button
+          type="primary"
+          size="large"
+          icon={<CloudDownloadOutlined />}
+          loading={busy}
+          disabled={!url.trim()}
+          onClick={onStart}
+        >
           {busy ? "下载中…" : "开始下载"}
-        </button>
-        <button className="danger" disabled={!busy} onClick={onStop}>
+        </Button>
+        <Button
+          danger
+          size="large"
+          icon={<StopOutlined />}
+          disabled={!busy}
+          onClick={onStop}
+        >
           停止
-        </button>
-      </div>
+        </Button>
+      </Space>
 
       {percent != null && (
-        <div className="progress">
-          <div className="progress-bar" style={{ width: `${Math.min(percent, 100)}%` }} />
-          <span>{percent.toFixed(1)}%</span>
-        </div>
+        <Progress
+          percent={Math.min(Number(percent.toFixed(1)), 100)}
+          status={busy ? "active" : percent >= 100 ? "success" : "normal"}
+          style={{ marginBottom: 16 }}
+        />
       )}
 
-      {error && <p className="error">{error}</p>}
-      {donePath && <p className="ok">完成：{donePath}</p>}
+      {error && (
+        <Alert
+          type="error"
+          showIcon
+          closable
+          message={error}
+          onClose={() => setError(null)}
+          style={{ marginBottom: 16 }}
+        />
+      )}
+      {donePath && (
+        <Alert
+          type="success"
+          showIcon
+          message="下载完成"
+          description={
+            <Typography.Text copyable ellipsis>
+              {donePath}
+            </Typography.Text>
+          }
+          style={{ marginBottom: 16 }}
+        />
+      )}
 
-      <pre className="log">{logs.join("\n")}</pre>
-    </section>
+      <Typography.Text type="secondary">日志</Typography.Text>
+      <pre className="log" ref={logRef}>
+        {logs.length ? logs.join("\n") : "等待开始…"}
+      </pre>
+    </Card>
   );
 }

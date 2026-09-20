@@ -22,9 +22,14 @@ export const api = {
   deleteVideo: (category: string, filename: string) =>
     invoke<void>("delete_video", { category, filename }),
   openVideo: (path: string) => invoke<void>("open_video", { path }),
-  startDownload: (url: string, category: string, quality: string) =>
+  startDownload: (
+    url: string,
+    category: string,
+    quality: string,
+    audioOnly = false,
+  ) =>
     invoke<void>("start_download", {
-      args: { url, category, quality },
+      args: { url, category, quality, audioOnly },
     }),
   stopDownload: () => invoke<void>("stop_download"),
   downloadRunning: () => invoke<boolean>("download_running"),

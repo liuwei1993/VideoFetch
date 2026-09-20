@@ -33,6 +33,8 @@ pub struct StartDownloadArgs {
     pub url: String,
     pub category: String,
     pub quality: String,
+    #[serde(default)]
+    pub audio_only: bool,
 }
 
 static DOWNLOAD_RUNNING: AtomicBool = AtomicBool::new(false);
@@ -261,10 +263,11 @@ pub fn start_download(app: AppHandle, args: StartDownloadArgs) -> Result<(), Str
     } else {
         args.quality.trim().to_string()
     };
+    let audio_only = args.audio_only;
 
     let app_for_job = app.clone();
     std::thread::spawn(move || {
-        let result = run_download(&app_for_job, &url, &category, &quality);
+        let result = run_download(&app_for_job, &url, &category, &quality, audio_only);
         clear_child_pid();
         DOWNLOAD_RUNNING.store(false, Ordering::SeqCst);
         match result {
@@ -290,6 +293,7 @@ fn run_download(
     url: &str,
     category: &str,
     quality: &str,
+    audio_only: bool,
 ) -> Result<PathBuf, String> {
     let mut settings = settings::load_settings(app)?;
     let root = settings::library_root_path(&settings);
@@ -322,12 +326,20 @@ fn run_download(
     cmd.env("PYTHONIOENCODING", "utf-8");
     cmd.arg("--newline")
         .arg("--no-playlist")
-        .arg("--progress")
-        .arg("-f")
-        .arg(site::format_selector(quality))
-        .arg("--merge-output-format")
-        .arg("mp4")
-        .arg("-o")
+        .arg("--progress");
+    if audio_only {
+        cmd.arg("-x")
+            .arg("--audio-format")
+            .arg("mp3")
+            .arg("--audio-quality")
+            .arg("0");
+    } else {
+        cmd.arg("-f")
+            .arg(site::format_selector(quality))
+            .arg("--merge-output-format")
+            .arg("mp4");
+    }
+    cmd.arg("-o")
         .arg(&template)
         .arg("--print")
         .arg("after_move:filepath")
@@ -360,11 +372,18 @@ fn run_download(
         .as_ref()
         .map(|p| format!("代理 {p}"))
         .unwrap_or_else(|| "直连".into());
+    let mode_label = if audio_only {
+        "音频模式 · 最好音质 · mp3"
+    } else {
+        "视频"
+    };
     let _ = app.emit(
         "download-progress",
         DownloadProgress {
             percent: Some(0.0),
-            line: format!("启动 {bin} · {site_label} · {proxy_label} · 输出 {out_dir:?}"),
+            line: format!(
+                "启动 {bin} · {site_label} · {proxy_label} · {mode_label} · 输出 {out_dir:?}"
+            ),
         },
     );
 
@@ -418,6 +437,12 @@ fn run_download(
     }
 
     if !status.success() {
+        if audio_only {
+            return Err(format!(
+                "yt-dlp 退出码: {:?}（音频转码失败时请确认已安装 ffmpeg）",
+                status.code()
+            ));
+        }
         return Err(format!("yt-dlp 退出码: {:?}", status.code()));
     }
 

@@ -5,7 +5,7 @@ use std::process::Command;
 
 pub const UNCATEGORIZED: &str = "未分类";
 
-const VIDEO_EXTS: &[&str] = &["mp4", "webm", "mkv", "avi", "m4v"];
+const VIDEO_EXTS: &[&str] = &["mp4", "webm", "mkv", "avi", "m4v", "mp3"];
 
 #[derive(Debug, Clone, Serialize)]
 pub struct VideoItem {
