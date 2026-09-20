@@ -134,6 +134,45 @@ pub fn load_resumable_queue(app: &AppHandle) -> Result<Option<DownloadQueue>, St
     }
 }
 
+/// Remove `.part` / `.ytdl` (and similar) whose filename contains `[id]` for given ids.
+pub fn cleanup_temp_files_in_category(category_dir: &Path, ids: &[String]) -> Result<(), String> {
+    if !category_dir.is_dir() {
+        return Ok(());
+    }
+    let entries = fs::read_dir(category_dir).map_err(|e| e.to_string())?;
+    for ent in entries.flatten() {
+        let name = ent.file_name().to_string_lossy().into_owned();
+        let lower = name.to_lowercase();
+        let is_temp = lower.ends_with(".part")
+            || lower.ends_with(".ytdl")
+            || lower.contains(".part.")
+            || looks_like_incomplete(&name);
+        if !is_temp {
+            continue;
+        }
+        let matched = ids.iter().any(|id| name.contains(&format!("[{id}]")));
+        if matched {
+            let _ = fs::remove_file(ent.path());
+        }
+    }
+    Ok(())
+}
+
+fn looks_like_incomplete(name: &str) -> bool {
+    crate::library::looks_like_ytdlp_fragment(name)
+}
+
+pub fn discard_queue_temps(library_root: &Path, queue: &DownloadQueue) -> Result<(), String> {
+    let cat = library_root.join(&queue.category);
+    let ids: Vec<String> = queue
+        .items
+        .iter()
+        .filter(|i| i.status != ItemStatus::Done)
+        .map(|i| i.id.clone())
+        .collect();
+    cleanup_temp_files_in_category(&cat, &ids)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,5 +260,34 @@ mod tests {
         let mut q = sample_batch();
         q.set_item_status(1, ItemStatus::Downloading);
         assert_eq!(q.items[1].status, ItemStatus::Downloading);
+    }
+
+    #[test]
+    fn cleanup_temp_files_removes_part_and_ytdl_matching_ids() {
+        let root = std::env::temp_dir().join(format!(
+            "vf_cleanup_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let cat = root.join("分类");
+        fs::create_dir_all(&cat).unwrap();
+        let part = cat.join("foo [BV2].mp4.part");
+        let ytdl = cat.join("foo [BV2].mp4.ytdl");
+        let keep = cat.join("foo [BV1].mp4");
+        let other = cat.join("bar [BV9].mp4.part");
+        fs::write(&part, b"x").unwrap();
+        fs::write(&ytdl, b"x").unwrap();
+        fs::write(&keep, b"x").unwrap();
+        fs::write(&other, b"x").unwrap();
+
+        cleanup_temp_files_in_category(&cat, &["BV2".into()]).unwrap();
+
+        assert!(!part.exists());
+        assert!(!ytdl.exists());
+        assert!(keep.exists());
+        assert!(other.exists());
+        let _ = fs::remove_dir_all(&root);
     }
 }
