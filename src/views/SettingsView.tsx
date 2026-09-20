@@ -5,6 +5,7 @@ import {
   Card,
   Form,
   Input,
+  InputNumber,
   Select,
   Spin,
   Switch,
@@ -96,6 +97,23 @@ export function SettingsView({ onSaved }: Props) {
             checked={settings.bilibili_use_proxy}
             onChange={(checked) =>
               setSettings({ ...settings, bilibili_use_proxy: checked })
+            }
+          />
+        </Form.Item>
+
+        <Form.Item
+          label="同时下载数"
+          extra="合集批量时最多并行几个任务（1–10，默认 5）"
+        >
+          <InputNumber
+            min={1}
+            max={10}
+            value={settings.max_concurrent_downloads}
+            onChange={(v) =>
+              setSettings({
+                ...settings,
+                max_concurrent_downloads: typeof v === "number" ? v : 5,
+              })
             }
           />
         </Form.Item>
