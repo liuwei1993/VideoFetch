@@ -102,6 +102,21 @@ fn download_running() -> bool {
     download::is_download_running()
 }
 
+#[tauri::command]
+fn get_download_queue(app: tauri::AppHandle) -> Result<Option<queue::DownloadQueue>, String> {
+    queue::load_resumable_queue(&app)
+}
+
+#[tauri::command]
+fn resume_download_queue(app: tauri::AppHandle) -> Result<(), String> {
+    download::resume_download_queue(app)
+}
+
+#[tauri::command]
+fn discard_download_queue(app: tauri::AppHandle) -> Result<(), String> {
+    download::discard_download_queue(app)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -129,6 +144,9 @@ pub fn run() {
             start_download,
             stop_download,
             download_running,
+            get_download_queue,
+            resume_download_queue,
+            discard_download_queue,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
