@@ -456,7 +456,7 @@ fn run_download(
                 if let Err(msg) = validate_playable_output(&path, audio_only) {
                     return Err(msg);
                 }
-                return Ok(path);
+                return Ok(shorten_output_path(&path));
             }
         }
     }
@@ -465,10 +465,20 @@ fn run_download(
     videos
         .into_iter()
         .max_by_key(|v| v.size)
-        .map(|v| PathBuf::from(v.path))
+        .map(|v| shorten_output_path(&PathBuf::from(v.path)))
         .ok_or_else(|| {
             "下载完成但未找到可用成品（可能音视频合并失败；请确认已安装 ffmpeg 后重试）".to_string()
         })
+}
+
+fn shorten_output_path(path: &Path) -> PathBuf {
+    match library::shorten_downloaded_filename(path) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("缩短文件名失败，保留原名: {e}");
+            path.to_path_buf()
+        }
+    }
 }
 
 fn validate_playable_output(path: &Path, audio_only: bool) -> Result<(), String> {

@@ -30,7 +30,10 @@ fn save_settings(app: tauri::AppHandle, settings: Settings) -> Result<(), String
 
 #[tauri::command]
 fn ensure_library(app: tauri::AppHandle) -> Result<(), String> {
-    with_root(&app, |root, _| library::ensure_library_root(root))
+    with_root(&app, |root, _| {
+        library::shorten_all_titles(root)?;
+        Ok(())
+    })
 }
 
 #[tauri::command]
@@ -101,7 +104,10 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let handle = app.handle().clone();
-            let _ = with_root(&handle, |root, _| library::ensure_library_root(root));
+            let _ = with_root(&handle, |root, _| {
+                let _ = library::shorten_all_titles(root);
+                Ok(())
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

@@ -136,6 +136,107 @@ pub fn looks_like_ytdlp_fragment(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+const TITLE_MAX_CHARS: usize = 25;
+
+fn is_title_punctuation(c: char) -> bool {
+    matches!(
+        c,
+        '！' | '？' | '。' | '，' | '、' | '；' | '：' | '…' | '!' | '?' | '.' | ',' | ';' | ':'
+            | '～' | '~' | '—' | '–'
+    )
+}
+
+/// Keep at most 25 chars; if longer, cut at the last punctuation within those 25.
+pub fn shorten_title(title: &str) -> String {
+    let chars: Vec<char> = title.chars().collect();
+    if chars.len() <= TITLE_MAX_CHARS {
+        return title.to_string();
+    }
+    let window = &chars[..TITLE_MAX_CHARS];
+    if let Some(pos) = window.iter().rposition(|c| is_title_punctuation(*c)) {
+        return window[..=pos].iter().collect();
+    }
+    window.iter().collect()
+}
+
+/// Split `title [id]` stem into (title, id). Falls back to (stem, "") if no trailing `[id]`.
+fn split_title_and_id(stem: &str) -> (String, Option<String>) {
+    let Some(open) = stem.rfind(" [") else {
+        return (stem.to_string(), None);
+    };
+    let rest = &stem[open + 2..];
+    if rest.ends_with(']') && rest.len() > 1 {
+        let id = rest[..rest.len() - 1].to_string();
+        let title = stem[..open].to_string();
+        return (title, Some(id));
+    }
+    (stem.to_string(), None)
+}
+
+/// Rename a finished download so the title part is shortened; keep `[id].ext`.
+pub fn shorten_downloaded_filename(path: &Path) -> Result<PathBuf, String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "无效路径".to_string())?
+        .to_path_buf();
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_string();
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| "无效文件名".to_string())?;
+
+    let (title, id) = split_title_and_id(stem);
+    let short = shorten_title(title.trim());
+    if short == title.trim() {
+        return Ok(path.to_path_buf());
+    }
+
+    let new_stem = match id {
+        Some(id) => format!("{short} [{id}]"),
+        None => short,
+    };
+    let new_name = if ext.is_empty() {
+        new_stem
+    } else {
+        format!("{new_stem}.{ext}")
+    };
+    let dest = parent.join(&new_name);
+    if dest == path {
+        return Ok(path.to_path_buf());
+    }
+    if dest.exists() {
+        return Err(format!("目标文件名已存在: {new_name}"));
+    }
+    fs::rename(path, &dest).map_err(|e| format!("重命名失败: {e}"))?;
+    Ok(dest)
+}
+
+/// Shorten long titles for every video under the library root.
+/// Conflicts / rename failures are skipped so the batch can continue.
+pub fn shorten_all_titles(root: &Path) -> Result<usize, String> {
+    ensure_library_root(root)?;
+    let cats = list_categories(root)?;
+    let mut renamed = 0;
+    for cat in cats {
+        let videos = list_videos(root, &cat)?;
+        for v in videos {
+            let path = PathBuf::from(&v.path);
+            match shorten_downloaded_filename(&path) {
+                Ok(new_path) if new_path != path => renamed += 1,
+                Ok(_) => {}
+                Err(e) => {
+                    eprintln!("跳过缩短文件名 {}: {e}", v.name);
+                }
+            }
+        }
+    }
+    Ok(renamed)
+}
+
 pub fn list_videos(root: &Path, category: &str) -> Result<Vec<VideoItem>, String> {
     validate_category_name(category)?;
     let dir = root.join(category.trim());
@@ -251,5 +352,41 @@ mod tests {
         let videos = list_videos(dir.path(), "B").unwrap();
         assert_eq!(videos.len(), 1);
         assert_eq!(videos[0].name, "clip.mp4");
+    }
+
+    #[test]
+    fn shorten_title_cuts_at_last_punct_within_25() {
+        let title = "毛豆脱6全面进化🤯全程炸场根本无解！总决赛超细腻文本依旧炸翻！开口直接笑麻了！ #脱口秀 #脱口秀大会 #脱口秀和ta的朋友们 #毛豆";
+        assert_eq!(shorten_title(title), "毛豆脱6全面进化🤯全程炸场根本无解！");
+    }
+
+    #[test]
+    fn shorten_title_hard_cut_without_punct() {
+        let title = "一二三四五六七八九十甲乙丙丁戊己庚辛壬癸子丑寅卯辰巳午";
+        assert_eq!(title.chars().count(), 27);
+        assert_eq!(
+            shorten_title(title),
+            "一二三四五六七八九十甲乙丙丁戊己庚辛壬癸子丑寅卯辰"
+        );
+    }
+
+    #[test]
+    fn shorten_all_titles_renames_library_files() {
+        let dir = tempfile::tempdir().unwrap();
+        ensure_library_root(dir.path()).unwrap();
+        create_category(dir.path(), "脱口秀").unwrap();
+        let long = "毛豆脱6全面进化🤯全程炸场根本无解！总决赛超细腻文本依旧炸翻！开口直接笑麻了！ [aO-hLnBsVL4].mp4";
+        let path = dir.path().join("脱口秀").join(long);
+        let mut f = fs::File::create(&path).unwrap();
+        writeln!(f, "x").unwrap();
+
+        let n = shorten_all_titles(dir.path()).unwrap();
+        assert_eq!(n, 1);
+        assert!(!path.exists());
+        let expected = dir
+            .path()
+            .join("脱口秀")
+            .join("毛豆脱6全面进化🤯全程炸场根本无解！ [aO-hLnBsVL4].mp4");
+        assert!(expected.exists());
     }
 }
