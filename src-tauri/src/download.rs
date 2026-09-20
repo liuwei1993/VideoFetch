@@ -3,11 +3,12 @@ use crate::settings::{self};
 use crate::site::{self, Site};
 use serde::Deserialize;
 use serde::Serialize;
+use std::collections::HashSet;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
@@ -41,18 +42,43 @@ pub struct StartDownloadArgs {
 
 static DOWNLOAD_RUNNING: AtomicBool = AtomicBool::new(false);
 static DOWNLOAD_CANCELLED: AtomicBool = AtomicBool::new(false);
-static CHILD_PID: Mutex<Option<u32>> = Mutex::new(None);
+static CHILD_PIDS: LazyLock<Mutex<HashSet<u32>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
 
-fn clear_child_pid() {
-    if let Ok(mut g) = CHILD_PID.lock() {
-        *g = None;
+fn clear_child_pids() {
+    if let Ok(mut g) = CHILD_PIDS.lock() {
+        g.clear();
     }
 }
 
-fn set_child_pid(pid: u32) {
-    if let Ok(mut g) = CHILD_PID.lock() {
-        *g = Some(pid);
+fn add_child_pid(pid: u32) {
+    if let Ok(mut g) = CHILD_PIDS.lock() {
+        g.insert(pid);
     }
+}
+
+fn remove_child_pid(pid: u32) {
+    if let Ok(mut g) = CHILD_PIDS.lock() {
+        g.remove(&pid);
+    }
+}
+
+fn kill_pid(pid: u32) {
+    // Kill the process group first (covers ffmpeg children), then the pid.
+    let _ = Command::new("kill")
+        .args(["-TERM", "--", &format!("-{pid}")])
+        .status();
+    let _ = Command::new("kill")
+        .args(["-TERM", "--", &pid.to_string()])
+        .status();
+    // Escalate if still alive shortly after.
+    std::thread::sleep(Duration::from_millis(300));
+    let _ = Command::new("kill")
+        .args(["-KILL", "--", &format!("-{pid}")])
+        .status();
+    let _ = Command::new("kill")
+        .args(["-KILL", "--", &pid.to_string()])
+        .status();
 }
 
 pub fn stop_download() -> Result<(), String> {
@@ -60,23 +86,13 @@ pub fn stop_download() -> Result<(), String> {
         return Err("当前没有下载任务".into());
     }
     DOWNLOAD_CANCELLED.store(true, Ordering::SeqCst);
-    let pid = CHILD_PID.lock().ok().and_then(|g| *g);
-    if let Some(pid) = pid {
-        // Kill the process group first (covers ffmpeg children), then the pid.
-        let _ = Command::new("kill")
-            .args(["-TERM", "--", &format!("-{pid}")])
-            .status();
-        let _ = Command::new("kill")
-            .args(["-TERM", "--", &pid.to_string()])
-            .status();
-        // Escalate if still alive shortly after.
-        std::thread::sleep(Duration::from_millis(300));
-        let _ = Command::new("kill")
-            .args(["-KILL", "--", &format!("-{pid}")])
-            .status();
-        let _ = Command::new("kill")
-            .args(["-KILL", "--", &pid.to_string()])
-            .status();
+    let pids: Vec<u32> = CHILD_PIDS
+        .lock()
+        .ok()
+        .map(|g| g.iter().copied().collect())
+        .unwrap_or_default();
+    for pid in pids {
+        kill_pid(pid);
     }
     Ok(())
 }
@@ -341,7 +357,7 @@ pub fn start_download(app: AppHandle, args: StartDownloadArgs) -> Result<(), Str
     let app_for_job = app.clone();
     std::thread::spawn(move || {
         let result = run_download(&app_for_job, &url, &category, &quality, audio_only);
-        clear_child_pid();
+        clear_child_pids();
         DOWNLOAD_RUNNING.store(false, Ordering::SeqCst);
         match result {
             Ok(path) => {
@@ -463,7 +479,8 @@ fn run_download(
     );
 
     let mut child = cmd.spawn().map_err(|e| format!("启动 yt-dlp 失败: {e}"))?;
-    set_child_pid(child.id());
+    let child_pid = child.id();
+    add_child_pid(child_pid);
 
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
@@ -495,7 +512,7 @@ fn run_download(
 
     let status = child.wait().map_err(|e| format!("等待进程失败: {e}"))?;
     stop_watch.store(true, Ordering::SeqCst);
-    clear_child_pid();
+    remove_child_pid(child_pid);
     let _ = out_handle.join();
     let _ = err_handle.join();
     let _ = watch_handle.join();
