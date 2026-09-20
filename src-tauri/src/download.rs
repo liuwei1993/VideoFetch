@@ -7,7 +7,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
@@ -36,6 +36,46 @@ pub struct StartDownloadArgs {
 }
 
 static DOWNLOAD_RUNNING: AtomicBool = AtomicBool::new(false);
+static DOWNLOAD_CANCELLED: AtomicBool = AtomicBool::new(false);
+static CHILD_PID: Mutex<Option<u32>> = Mutex::new(None);
+
+fn clear_child_pid() {
+    if let Ok(mut g) = CHILD_PID.lock() {
+        *g = None;
+    }
+}
+
+fn set_child_pid(pid: u32) {
+    if let Ok(mut g) = CHILD_PID.lock() {
+        *g = Some(pid);
+    }
+}
+
+pub fn stop_download() -> Result<(), String> {
+    if !DOWNLOAD_RUNNING.load(Ordering::SeqCst) {
+        return Err("当前没有下载任务".into());
+    }
+    DOWNLOAD_CANCELLED.store(true, Ordering::SeqCst);
+    let pid = CHILD_PID.lock().ok().and_then(|g| *g);
+    if let Some(pid) = pid {
+        // Kill the process group first (covers ffmpeg children), then the pid.
+        let _ = Command::new("kill")
+            .args(["-TERM", "--", &format!("-{pid}")])
+            .status();
+        let _ = Command::new("kill")
+            .args(["-TERM", "--", &pid.to_string()])
+            .status();
+        // Escalate if still alive shortly after.
+        std::thread::sleep(Duration::from_millis(300));
+        let _ = Command::new("kill")
+            .args(["-KILL", "--", &format!("-{pid}")])
+            .status();
+        let _ = Command::new("kill")
+            .args(["-KILL", "--", &pid.to_string()])
+            .status();
+    }
+    Ok(())
+}
 
 pub fn resolve_ytdlp() -> Result<(String, Vec<String>), String> {
     if let Ok(custom) = std::env::var("VIDEOFETCH_YTDLP") {
@@ -203,6 +243,7 @@ pub fn start_download(app: AppHandle, args: StartDownloadArgs) -> Result<(), Str
     if DOWNLOAD_RUNNING.swap(true, Ordering::SeqCst) {
         return Err("已有下载任务在进行".into());
     }
+    DOWNLOAD_CANCELLED.store(false, Ordering::SeqCst);
 
     let url = args.url.trim().to_string();
     if url.is_empty() {
@@ -224,6 +265,7 @@ pub fn start_download(app: AppHandle, args: StartDownloadArgs) -> Result<(), Str
     let app_for_job = app.clone();
     std::thread::spawn(move || {
         let result = run_download(&app_for_job, &url, &category, &quality);
+        clear_child_pid();
         DOWNLOAD_RUNNING.store(false, Ordering::SeqCst);
         match result {
             Ok(path) => {
@@ -302,6 +344,12 @@ fn run_download(
 
     cmd.arg(url);
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // Own process group so stop can kill yt-dlp + ffmpeg children.
+        cmd.process_group(0);
+    }
 
     let site_label = match site {
         Site::Youtube => "YouTube",
@@ -321,6 +369,7 @@ fn run_download(
     );
 
     let mut child = cmd.spawn().map_err(|e| format!("启动 yt-dlp 失败: {e}"))?;
+    set_child_pid(child.id());
 
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
@@ -352,9 +401,21 @@ fn run_download(
 
     let status = child.wait().map_err(|e| format!("等待进程失败: {e}"))?;
     stop_watch.store(true, Ordering::SeqCst);
+    clear_child_pid();
     let _ = out_handle.join();
     let _ = err_handle.join();
     let _ = watch_handle.join();
+
+    if DOWNLOAD_CANCELLED.load(Ordering::SeqCst) {
+        let _ = app.emit(
+            "download-progress",
+            DownloadProgress {
+                percent: None,
+                line: "已停止下载".into(),
+            },
+        );
+        return Err("已停止下载".into());
+    }
 
     if !status.success() {
         return Err(format!("yt-dlp 退出码: {:?}", status.code()));

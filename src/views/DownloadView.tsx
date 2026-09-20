@@ -57,7 +57,12 @@ export function DownloadView({
       const u3 = await listen<DownloadError>("download-error", (e) => {
         if (cancelled) return;
         setBusy(false);
-        setError(e.payload.message);
+        if (e.payload.message.includes("已停止")) {
+          setLogs((prev) => [...prev, e.payload.message]);
+          setError(null);
+        } else {
+          setError(e.payload.message);
+        }
       });
       if (cancelled) {
         u1();
@@ -102,6 +107,15 @@ export function DownloadView({
     }
   }
 
+  async function onStop() {
+    try {
+      await api.stopDownload();
+      setLogs((prev) => [...prev, "正在停止…"]);
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
   return (
     <section className="panel">
       <h2>下载</h2>
@@ -111,13 +125,18 @@ export function DownloadView({
           value={url}
           onChange={(e) => setUrl(e.target.value)}
           placeholder="YouTube / Bilibili URL"
+          disabled={busy}
         />
       </label>
 
       <div className="row-fields">
         <label className="field">
           <span>分类</span>
-          <select value={category} onChange={(e) => setCategory(e.target.value)}>
+          <select
+            value={category}
+            onChange={(e) => setCategory(e.target.value)}
+            disabled={busy}
+          >
             {categories.map((c) => (
               <option key={c} value={c}>
                 {c}
@@ -131,11 +150,16 @@ export function DownloadView({
             value={newCategory}
             onChange={(e) => setNewCategory(e.target.value)}
             placeholder="新分类名"
+            disabled={busy}
           />
         </label>
         <label className="field">
           <span>清晰度</span>
-          <select value={quality} onChange={(e) => setQuality(e.target.value)}>
+          <select
+            value={quality}
+            onChange={(e) => setQuality(e.target.value)}
+            disabled={busy}
+          >
             <option value="720">720p</option>
             <option value="1080">1080p</option>
             <option value="best">最高</option>
@@ -143,9 +167,14 @@ export function DownloadView({
         </label>
       </div>
 
-      <button disabled={busy || !url.trim()} onClick={onStart}>
-        {busy ? "下载中…" : "开始下载"}
-      </button>
+      <div className="actions-row">
+        <button disabled={busy || !url.trim()} onClick={onStart}>
+          {busy ? "下载中…" : "开始下载"}
+        </button>
+        <button className="danger" disabled={!busy} onClick={onStop}>
+          停止
+        </button>
+      </div>
 
       {percent != null && (
         <div className="progress">

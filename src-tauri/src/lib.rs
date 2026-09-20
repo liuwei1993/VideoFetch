@@ -86,6 +86,11 @@ fn start_download(app: tauri::AppHandle, args: StartDownloadArgs) -> Result<(), 
 }
 
 #[tauri::command]
+fn stop_download() -> Result<(), String> {
+    download::stop_download()
+}
+
+#[tauri::command]
 fn download_running() -> bool {
     download::is_download_running()
 }
@@ -112,6 +117,7 @@ pub fn run() {
             delete_video,
             open_video,
             start_download,
+            stop_download,
             download_running,
         ])
         .run(tauri::generate_context!())

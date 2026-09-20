@@ -26,5 +26,6 @@ export const api = {
     invoke<void>("start_download", {
       args: { url, category, quality },
     }),
+  stopDownload: () => invoke<void>("stop_download"),
   downloadRunning: () => invoke<boolean>("download_running"),
 };
