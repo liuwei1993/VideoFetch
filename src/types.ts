@@ -16,6 +16,8 @@ export type VideoItem = {
 export type DownloadProgress = {
   percent: number | null;
   line: string;
+  speed: string | null;
+  eta: string | null;
 };
 
 export type DownloadFinished = {

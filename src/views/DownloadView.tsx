@@ -38,6 +38,8 @@ export function DownloadView({
   const [quality, setQuality] = useState(defaultQuality);
   const [audioOnly, setAudioOnly] = useState(false);
   const [percent, setPercent] = useState<number | null>(null);
+  const [speed, setSpeed] = useState<string | null>(null);
+  const [eta, setEta] = useState<string | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -68,6 +70,8 @@ export function DownloadView({
       const u1 = await listen<DownloadProgress>("download-progress", (e) => {
         if (cancelled) return;
         if (e.payload.percent != null) setPercent(e.payload.percent);
+        if (e.payload.speed != null) setSpeed(e.payload.speed);
+        if (e.payload.eta != null) setEta(e.payload.eta);
         setLogs((prev) => {
           const next = [...prev, e.payload.line];
           return next.length > 200 ? next.slice(-200) : next;
@@ -78,11 +82,15 @@ export function DownloadView({
         setBusy(false);
         setDonePath(e.payload.path);
         setPercent(100);
+        setSpeed(null);
+        setEta(null);
         onCategoriesChangedRef.current();
       });
       const u3 = await listen<DownloadError>("download-error", (e) => {
         if (cancelled) return;
         setBusy(false);
+        setSpeed(null);
+        setEta(null);
         if (e.payload.message.includes("已停止")) {
           setLogs((prev) => [...prev, e.payload.message]);
           setError(null);
@@ -122,6 +130,8 @@ export function DownloadView({
     setDonePath(null);
     setLogs([]);
     setPercent(0);
+    setSpeed(null);
+    setEta(null);
     try {
       const cat = await ensureCategorySelected();
       setBusy(true);
@@ -229,6 +239,12 @@ export function DownloadView({
         <Progress
           percent={Math.min(Number(percent.toFixed(1)), 100)}
           status={busy ? "active" : percent >= 100 ? "success" : "normal"}
+          format={(p) => {
+            const parts = [`${p}%`];
+            if (busy && speed) parts.push(speed);
+            if (busy && eta) parts.push(`剩余 ${eta}`);
+            return parts.join(" · ");
+          }}
           style={{ marginBottom: 16 }}
         />
       )}
