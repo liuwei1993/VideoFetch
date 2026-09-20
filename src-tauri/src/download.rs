@@ -15,6 +15,8 @@ use tauri::{AppHandle, Emitter};
 pub struct DownloadProgress {
     pub percent: Option<f64>,
     pub line: String,
+    pub speed: Option<String>,
+    pub eta: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -212,12 +214,16 @@ fn emit_line(app: &AppHandle, line: &str) {
         return;
     }
     let percent = parse_percent(line);
+    let speed = parse_speed(line);
+    let eta = parse_eta(line);
     let path_hint = !line.starts_with('[') && Path::new(line).is_absolute();
     let _ = app.emit(
         "download-progress",
         DownloadProgress {
             percent,
             line: line.to_string(),
+            speed,
+            eta,
         },
     );
     let _ = path_hint; // handled by caller collecting last_path
@@ -300,6 +306,8 @@ fn watch_part_files(app: AppHandle, out_dir: PathBuf, stop: Arc<AtomicBool>) {
                 DownloadProgress {
                     percent: None,
                     line: format!("写入中 {mb:.1} MB · {name}"),
+                    speed: None,
+                    eta: None,
                 },
             );
         }
@@ -449,6 +457,8 @@ fn run_download(
             line: format!(
                 "启动 {bin} · {site_label} · {proxy_label} · {mode_label} · 输出 {out_dir:?}"
             ),
+            speed: None,
+            eta: None,
         },
     );
 
@@ -496,6 +506,8 @@ fn run_download(
             DownloadProgress {
                 percent: None,
                 line: "已停止下载".into(),
+                speed: None,
+                eta: None,
             },
         );
         return Err("已停止下载".into());
