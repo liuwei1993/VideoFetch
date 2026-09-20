@@ -1,0 +1,27 @@
+export type Settings = {
+  library_root: string;
+  default_quality: string;
+  last_category: string;
+  youtube_proxy: string;
+  bilibili_use_proxy: boolean;
+  cookie_file: string | null;
+};
+
+export type VideoItem = {
+  name: string;
+  path: string;
+  size: number;
+};
+
+export type DownloadProgress = {
+  percent: number | null;
+  line: string;
+};
+
+export type DownloadFinished = {
+  path: string;
+};
+
+export type DownloadError = {
+  message: string;
+};
