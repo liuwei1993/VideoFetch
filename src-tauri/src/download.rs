@@ -37,7 +37,7 @@ use serde::Deserialize;
 static DOWNLOAD_RUNNING: AtomicBool = AtomicBool::new(false);
 
 pub fn resolve_ytdlp() -> Result<(String, Vec<String>), String> {
-    if let Ok(custom) = std::env::var("WEB_VIDEOS_YTDLP") {
+    if let Ok(custom) = std::env::var("VIDEOFETCH_YTDLP") {
         if !custom.trim().is_empty() {
             return Ok((custom, vec![]));
         }
@@ -55,7 +55,7 @@ pub fn resolve_ytdlp() -> Result<(String, Vec<String>), String> {
     if command_exists("yt-dlp") {
         return Ok(("yt-dlp".into(), vec![]));
     }
-    Err("未找到 yt-dlp。请安装 uv（推荐）或把 yt-dlp 加入 PATH，也可设置 WEB_VIDEOS_YTDLP。".into())
+    Err("未找到 yt-dlp。请安装 uv（推荐）或把 yt-dlp 加入 PATH，也可设置 VIDEOFETCH_YTDLP。".into())
 }
 
 fn command_exists(name: &str) -> bool {

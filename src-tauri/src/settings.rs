@@ -17,7 +17,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            library_root: "~/web-videos".into(),
+            library_root: "~/videofetch".into(),
             default_quality: "720".into(),
             last_category: "未分类".into(),
             youtube_proxy: "http://127.0.0.1:57890".into(),
@@ -86,9 +86,9 @@ mod tests {
 
     #[test]
     fn expand_tilde() {
-        let p = expand_path("~/web-videos");
+        let p = expand_path("~/videofetch");
         assert!(p.is_absolute());
-        assert!(p.ends_with("web-videos"));
+        assert!(p.ends_with("videofetch"));
     }
 
     #[test]

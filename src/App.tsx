@@ -37,7 +37,7 @@ function App() {
   return (
     <div className="app">
       <header className="topbar">
-        <div className="brand">Web Videos</div>
+        <div className="brand">VideoFetch</div>
         <nav>
           <button
             className={tab === "download" ? "active" : ""}

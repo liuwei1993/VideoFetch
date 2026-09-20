@@ -1,11 +1,11 @@
-# Tauri 视频下载器设计
+# VideoFetch 设计
 
 日期：2026-09-20  
 状态：已批准（对话确认）
 
 ## 目标
 
-桌面客户端：下载 YouTube / Bilibili 视频，并用磁盘文件夹做分类管理。
+桌面客户端 VideoFetch：下载 YouTube / Bilibili 视频，并用磁盘文件夹做分类管理。
 
 ## 技术栈
 
@@ -16,7 +16,7 @@
 | 下载引擎 | yt-dlp 侧车二进制 | 统一支持 YouTube / Bilibili |
 | 合并转码 | ffmpeg（系统或捆绑） | DASH 音视频合成 mp4 |
 | 配置 | 应用 config 目录下的 `settings.json` | 见下文 |
-| 视频库根目录 | 默认 `~/web-videos` | 设置可改 |
+| 视频库根目录 | 默认 `~/videofetch` | 设置可改 |
 
 不采用：纯 Rust 站点解析、Electron。
 
@@ -25,7 +25,7 @@
 分类 = 库根目录下的**一级文件夹**（第一版不支持嵌套）。
 
 ```
-~/web-videos/
+~/videofetch/
   未分类/
   脱口秀/
   教程/
@@ -38,7 +38,7 @@
 | 重命名分类 | 重命名文件夹 |
 | 删除分类 | 删除文件夹；非空时需确认 |
 | 移动视频 | 文件系统移动到目标分类目录 |
-| 下载落盘 | `~/web-videos/<分类>/<标题> [id].mp4` |
+| 下载落盘 | `~/videofetch/<分类>/<标题> [id].mp4` |
 
 回退分类名：`未分类`（尚未选过分类时使用）。
 
@@ -61,7 +61,7 @@
    - 操作：移动分类、用系统默认播放器打开、删除文件
 
 3. **设置**  
-   - 库根目录（默认 `~/web-videos`）  
+   - 库根目录（默认 `~/videofetch`）  
    - 默认清晰度（默认 720p）  
    - YouTube 代理（默认 `http://127.0.0.1:57890`）  
    - Bilibili 是否走代理（默认关闭 = 直连）  
@@ -89,7 +89,7 @@
 
 ```json
 {
-  "library_root": "~/web-videos",
+  "library_root": "~/videofetch",
   "default_quality": "720",
   "last_category": "脱口秀",
   "youtube_proxy": "http://127.0.0.1:57890",
