@@ -2,6 +2,7 @@ use crate::download;
 use crate::settings::Settings;
 use crate::site;
 use serde::Serialize;
+use std::io::Read;
 use std::process::{Command, Stdio};
 
 #[derive(Debug, Clone, Serialize)]
@@ -61,19 +62,54 @@ pub fn expand_playlist(url: &str, settings: &Settings) -> Result<Vec<PlaylistIte
 
     cmd.arg(url);
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
 
-    let output = cmd
-        .output()
+    let mut child = cmd
+        .spawn()
         .map_err(|e| format!("展开合集失败（启动 yt-dlp）: {e}"))?;
-    if !output.status.success() {
-        let err = String::from_utf8_lossy(&output.stderr);
+    let child_pid = child.id();
+    download::add_child_pid(child_pid);
+
+    let stdout_pipe = child.stdout.take();
+    let stderr_pipe = child.stderr.take();
+    let stdout_handle = std::thread::spawn(move || {
+        let mut buf = String::new();
+        if let Some(mut out) = stdout_pipe {
+            let _ = out.read_to_string(&mut buf);
+        }
+        buf
+    });
+    let stderr_handle = std::thread::spawn(move || {
+        let mut buf = String::new();
+        if let Some(mut err) = stderr_pipe {
+            let _ = err.read_to_string(&mut buf);
+        }
+        buf
+    });
+
+    let status = child
+        .wait()
+        .map_err(|e| format!("展开合集失败（等待 yt-dlp）: {e}"))?;
+    download::remove_child_pid(child_pid);
+
+    let stdout = stdout_handle.join().unwrap_or_default();
+    let stderr = stderr_handle.join().unwrap_or_default();
+
+    if download::is_download_cancelled() {
+        return Err("已停止下载".into());
+    }
+
+    if !status.success() {
         return Err(format!(
             "展开合集失败: {} {}",
-            output.status,
-            err.chars().take(400).collect::<String>()
+            status,
+            stderr.chars().take(400).collect::<String>()
         ));
     }
-    let stdout = String::from_utf8_lossy(&output.stdout);
     let items = parse_flat_playlist_output(&stdout);
     if items.is_empty() {
         return Err("合集为空或无法解析条目".into());

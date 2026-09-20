@@ -101,16 +101,20 @@ fn clear_child_pids() {
     }
 }
 
-fn add_child_pid(pid: u32) {
+pub(crate) fn add_child_pid(pid: u32) {
     if let Ok(mut g) = CHILD_PIDS.lock() {
         g.insert(pid);
     }
 }
 
-fn remove_child_pid(pid: u32) {
+pub(crate) fn remove_child_pid(pid: u32) {
     if let Ok(mut g) = CHILD_PIDS.lock() {
         g.remove(&pid);
     }
+}
+
+pub(crate) fn is_download_cancelled() -> bool {
+    DOWNLOAD_CANCELLED.load(Ordering::SeqCst)
 }
 
 fn kill_pid(pid: u32) {
@@ -424,6 +428,8 @@ pub fn start_download(app: AppHandle, args: StartDownloadArgs) -> Result<(), Str
                     &category,
                     &quality,
                     audio_only,
+                    true,
+                    true,
                 )?))
             }
         })();
@@ -454,6 +460,8 @@ fn run_download(
     category: &str,
     quality: &str,
     audio_only: bool,
+    update_last_category: bool,
+    allow_size_fallback: bool,
 ) -> Result<PathBuf, String> {
     let mut settings = settings::load_settings(app)?;
     let root = settings::library_root_path(&settings);
@@ -611,8 +619,10 @@ fn run_download(
         return Err(format!("yt-dlp 退出码: {:?}", status.code()));
     }
 
-    settings.last_category = category.to_string();
-    settings::save_settings(app, &settings)?;
+    if update_last_category {
+        settings.last_category = category.to_string();
+        settings::save_settings(app, &settings)?;
+    }
 
     if let Ok(guard) = last_path.lock() {
         if let Some(p) = guard.clone() {
@@ -624,6 +634,10 @@ fn run_download(
                 return Ok(shorten_output_path(&path));
             }
         }
+    }
+
+    if !allow_size_fallback {
+        return Err("下载完成但未找到输出文件".into());
     }
 
     let videos = library::list_videos(&root, category)?;
@@ -695,7 +709,15 @@ fn run_batch_download(
                     },
                 );
                 let url = crate::playlist::bilibili_video_url(&item.id);
-                match run_download(&app, &url, &category, &quality, audio_only) {
+                match run_download(
+                    &app,
+                    &url,
+                    &category,
+                    &quality,
+                    audio_only,
+                    false,
+                    false,
+                ) {
                     Ok(path) => {
                         succeeded.fetch_add(1, Ordering::SeqCst);
                         let _ = app.emit(
@@ -745,6 +767,11 @@ fn run_batch_download(
             cancelled,
         },
     );
+
+    let mut settings = settings::load_settings(app)?;
+    settings.last_category = category.to_string();
+    settings::save_settings(app, &settings)?;
+
     Ok(())
 }
 
