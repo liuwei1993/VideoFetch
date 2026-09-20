@@ -141,6 +141,71 @@ fn parse_percent(line: &str) -> Option<f64> {
     num.parse().ok()
 }
 
+fn split_speed_value(raw: &str) -> Option<(f64, String)> {
+    let end = raw
+        .char_indices()
+        .find(|(_, c)| c.is_ascii_alphabetic())
+        .map(|(i, _)| i)?;
+    let (num_str, unit) = raw.split_at(end);
+    let num: f64 = num_str.parse().ok()?;
+    Some((num, unit.to_ascii_lowercase()))
+}
+
+fn parse_speed(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    if !trimmed.contains("[download]") {
+        return None;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    let at_idx = lower.find(" at ")?;
+    let after_at = trimmed[at_idx + 4..].trim_start();
+    let slash_s = after_at.to_ascii_lowercase().find("/s")?;
+    let raw = after_at[..slash_s].trim();
+    let (num, unit) = split_speed_value(raw)?;
+    let label = match unit.as_str() {
+        "kib" | "kb" => "KB/s",
+        "mib" | "mb" => "MB/s",
+        "gib" | "gb" => "GB/s",
+        "b" => "B/s",
+        _ => return None,
+    };
+    Some(format!("{num:.1} {label}"))
+}
+
+fn parse_eta(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    if !trimmed.contains("[download]") {
+        return None;
+    }
+    let upper = trimmed.to_ascii_uppercase();
+    let eta_idx = upper.find("ETA ")?;
+    let rest = trimmed[eta_idx + 4..].trim_start();
+    let token = rest.split_whitespace().next()?.trim();
+    let lower = token.to_ascii_lowercase();
+    if lower == "unknown" || token.contains('-') {
+        return None;
+    }
+    let parts: Vec<&str> = token.split(':').collect();
+    match parts.as_slice() {
+        [mm, ss] => {
+            let m: u32 = mm.parse().ok()?;
+            let s: u32 = ss.parse().ok()?;
+            Some(format!("{m}:{s:02}"))
+        }
+        [hh, mm, ss] => {
+            let h: u32 = hh.parse().ok()?;
+            let m: u32 = mm.parse().ok()?;
+            let s: u32 = ss.parse().ok()?;
+            if h == 0 {
+                Some(format!("{m}:{s:02}"))
+            } else {
+                Some(format!("{h}:{m:02}:{s:02}"))
+            }
+        }
+        _ => None,
+    }
+}
+
 fn emit_line(app: &AppHandle, line: &str) {
     let line = line.trim();
     if line.is_empty() {
@@ -550,5 +615,34 @@ mod tests {
         let line = "[download]  45.2% of  237.23MiB at    7.54MiB/s ETA 00:00";
         assert_eq!(parse_percent(line), Some(45.2));
         assert_eq!(parse_percent("hello"), None);
+    }
+
+    #[test]
+    fn parse_download_speed_and_eta() {
+        let line = "[download]  45.2% of  237.23MiB at    7.54MiB/s ETA 00:25";
+        assert_eq!(parse_speed(line).as_deref(), Some("7.5 MB/s"));
+        assert_eq!(parse_eta(line).as_deref(), Some("0:25"));
+    }
+
+    #[test]
+    fn parse_eta_with_hours() {
+        let line = "[download]  10.0% of 1.00GiB at 1.20MiB/s ETA 01:02:03";
+        assert_eq!(parse_eta(line).as_deref(), Some("1:02:03"));
+        assert_eq!(parse_speed(line).as_deref(), Some("1.2 MB/s"));
+    }
+
+    #[test]
+    fn parse_speed_eta_absent_or_unknown() {
+        assert_eq!(parse_speed("hello"), None);
+        assert_eq!(parse_eta("hello"), None);
+        assert_eq!(
+            parse_eta("[download]  1.0% of 10.00MiB at 1.00MiB/s ETA Unknown"),
+            None
+        );
+        assert_eq!(
+            parse_eta("[download]  1.0% of 10.00MiB at 1.00MiB/s ETA --:--"),
+            None
+        );
+        assert_eq!(parse_speed("写入中 12.0 MB · foo.part"), None);
     }
 }
