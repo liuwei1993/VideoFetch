@@ -55,6 +55,7 @@ type Props = {
   onCategoriesChanged: () => void;
   resumeSeed: DownloadQueue | null;
   onResumeSeedConsumed: () => void;
+  resumeResetKey: number;
 };
 
 function rowFromQueueItem(it: DownloadQueue["items"][number]): TaskRow {
@@ -89,6 +90,7 @@ export function DownloadView({
   onCategoriesChanged,
   resumeSeed,
   onResumeSeedConsumed,
+  resumeResetKey,
 }: Props) {
   const [url, setUrl] = useState("");
   const [category, setCategory] = useState(defaultCategory);
@@ -150,6 +152,11 @@ export function DownloadView({
     }
     onResumeSeedConsumed();
   }, [resumeSeed, onResumeSeedConsumed]);
+
+  useEffect(() => {
+    if (resumeResetKey === 0) return;
+    setBusy(false);
+  }, [resumeResetKey]);
 
   useEffect(() => {
     if (logRef.current) {

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Alert, Layout, Menu, Modal, Typography, theme } from "antd";
+import { Alert, Layout, Menu, Modal, Typography, message, theme } from "antd";
 import {
   CloudDownloadOutlined,
   FolderOpenOutlined,
@@ -33,6 +33,8 @@ function App() {
   const [bootError, setBootError] = useState<string | null>(null);
   const [pendingQueue, setPendingQueue] = useState<DownloadQueue | null>(null);
   const [resumeSeed, setResumeSeed] = useState<DownloadQueue | null>(null);
+  const [resuming, setResuming] = useState(false);
+  const [resumeResetKey, setResumeResetKey] = useState(0);
   const { token } = theme.useToken();
 
   const refresh = useCallback(async () => {
@@ -61,17 +63,24 @@ function App() {
 
   async function onResumeQueue() {
     if (!pendingQueue) return;
-    setResumeSeed(pendingQueue);
-    setPendingQueue(null);
-    setTab("download");
+    setResuming(true);
     try {
+      setTab("download");
+      setResumeSeed(pendingQueue);
+      await new Promise((r) => setTimeout(r, 50));
       await api.resumeDownloadQueue();
+      setPendingQueue(null);
     } catch (e) {
-      setBootError(String(e));
+      setResumeSeed(null);
+      setResumeResetKey((k) => k + 1);
+      message.error(String(e));
+    } finally {
+      setResuming(false);
     }
   }
 
   async function onDiscardQueue() {
+    if (resuming) return;
     try {
       await api.discardDownloadQueue();
       setPendingQueue(null);
@@ -133,6 +142,7 @@ function App() {
             onCategoriesChanged={refresh}
             resumeSeed={resumeSeed}
             onResumeSeedConsumed={onResumeSeedConsumed}
+            resumeResetKey={resumeResetKey}
           />
         )}
         {tab === "library" && (
@@ -148,6 +158,8 @@ function App() {
         cancelText="丢弃"
         onOk={onResumeQueue}
         onCancel={onDiscardQueue}
+        confirmLoading={resuming}
+        cancelButtonProps={{ disabled: resuming }}
         closable={false}
         maskClosable={false}
       >

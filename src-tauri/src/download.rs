@@ -474,6 +474,7 @@ pub fn start_download(app: AppHandle, args: StartDownloadArgs) -> Result<(), Str
                 )?;
                 Ok(SessionOutcome::Batch)
             } else {
+                let item_id = queue_item_id_from_url(&url);
                 let single_queue = queue::DownloadQueue {
                     version: 1,
                     kind: queue::QueueKind::Single,
@@ -484,8 +485,8 @@ pub fn start_download(app: AppHandle, args: StartDownloadArgs) -> Result<(), Str
                     updated_at: String::new(),
                     items: vec![queue::QueueItem {
                         index: 0,
-                        id: url.clone(),
-                        title: url.clone(),
+                        id: item_id.clone(),
+                        title: item_id,
                         url: url.clone(),
                         status: queue::ItemStatus::Downloading,
                     }],
@@ -1057,6 +1058,20 @@ pub fn is_download_running() -> bool {
     DOWNLOAD_RUNNING.load(Ordering::SeqCst)
 }
 
+fn queue_item_id_from_url(url: &str) -> String {
+    let base = url
+        .split('?')
+        .next()
+        .unwrap_or(url)
+        .split('#')
+        .next()
+        .unwrap_or(url);
+    base.rsplit('/')
+        .find(|s| !s.is_empty())
+        .unwrap_or(url)
+        .to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1095,5 +1110,17 @@ mod tests {
             None
         );
         assert_eq!(parse_speed("写入中 12.0 MB · foo.part"), None);
+    }
+
+    #[test]
+    fn queue_item_id_from_url_strips_query_and_uses_last_segment() {
+        assert_eq!(
+            queue_item_id_from_url("https://www.bilibili.com/video/BV1xx411c7mD?p=1"),
+            "BV1xx411c7mD"
+        );
+        assert_eq!(
+            queue_item_id_from_url("https://example.com/watch/abc123#t=10"),
+            "abc123"
+        );
     }
 }
