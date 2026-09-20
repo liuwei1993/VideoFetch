@@ -1,11 +1,14 @@
 use crate::library::{self, UNCATEGORIZED};
 use crate::settings::{self};
 use crate::site::{self, Site};
+use serde::Deserialize;
 use serde::Serialize;
-use std::io::{BufRead, BufReader};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
 #[derive(Clone, Serialize)]
@@ -32,8 +35,6 @@ pub struct StartDownloadArgs {
     pub quality: String,
 }
 
-use serde::Deserialize;
-
 static DOWNLOAD_RUNNING: AtomicBool = AtomicBool::new(false);
 
 pub fn resolve_ytdlp() -> Result<(String, Vec<String>), String> {
@@ -42,13 +43,17 @@ pub fn resolve_ytdlp() -> Result<(String, Vec<String>), String> {
             return Ok((custom, vec![]));
         }
     }
+    // `python -u -m yt_dlp` keeps progress unbuffered when stdout/stderr are pipes.
     if command_exists("uvx") {
         return Ok((
             "uvx".into(),
             vec![
                 "--from".into(),
                 "yt-dlp".into(),
-                "yt-dlp".into(),
+                "python".into(),
+                "-u".into(),
+                "-m".into(),
+                "yt_dlp".into(),
             ],
         ));
     }
@@ -94,6 +99,106 @@ fn parse_percent(line: &str) -> Option<f64> {
     num.parse().ok()
 }
 
+fn emit_line(app: &AppHandle, line: &str) {
+    let line = line.trim();
+    if line.is_empty() {
+        return;
+    }
+    let percent = parse_percent(line);
+    let path_hint = !line.starts_with('[') && Path::new(line).is_absolute();
+    let _ = app.emit(
+        "download-progress",
+        DownloadProgress {
+            percent,
+            line: line.to_string(),
+        },
+    );
+    let _ = path_hint; // handled by caller collecting last_path
+}
+
+/// Read pipe bytes and split on both `\n` and `\r` (yt-dlp progress often uses `\r`).
+fn pump_pipe(app: AppHandle, mut pipe: impl Read, last_path: Arc<std::sync::Mutex<Option<String>>>) {
+    let mut buf = [0u8; 4096];
+    let mut acc = Vec::<u8>::new();
+    loop {
+        match pipe.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                for &b in &buf[..n] {
+                    if b == b'\n' || b == b'\r' {
+                        if !acc.is_empty() {
+                            let line = String::from_utf8_lossy(&acc).into_owned();
+                            if !line.starts_with('[') && Path::new(&line).is_absolute() {
+                                if let Ok(mut g) = last_path.lock() {
+                                    *g = Some(line.clone());
+                                }
+                            }
+                            emit_line(&app, &line);
+                            acc.clear();
+                        }
+                    } else {
+                        acc.push(b);
+                    }
+                }
+                let _ = std::io::stdout().flush();
+            }
+            Err(_) => break,
+        }
+    }
+    if !acc.is_empty() {
+        let line = String::from_utf8_lossy(&acc).into_owned();
+        if !line.starts_with('[') && Path::new(&line).is_absolute() {
+            if let Ok(mut g) = last_path.lock() {
+                *g = Some(line.clone());
+            }
+        }
+        emit_line(&app, &line);
+    }
+}
+
+fn watch_part_files(app: AppHandle, out_dir: PathBuf, stop: Arc<AtomicBool>) {
+    let mut last_bytes = 0u64;
+    while !stop.load(Ordering::SeqCst) {
+        std::thread::sleep(Duration::from_millis(800));
+        let Ok(entries) = std::fs::read_dir(&out_dir) else {
+            continue;
+        };
+        let mut total = 0u64;
+        let mut name = String::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let is_part = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.eq_ignore_ascii_case("part") || e.eq_ignore_ascii_case("ytdl"))
+                .unwrap_or(false)
+                || path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| n.contains(".part"))
+                    .unwrap_or(false);
+            if !is_part {
+                continue;
+            }
+            if let Ok(meta) = entry.metadata() {
+                total = total.max(meta.len());
+                name = entry.file_name().to_string_lossy().into_owned();
+            }
+        }
+        if total > 0 && total != last_bytes {
+            last_bytes = total;
+            let mb = total as f64 / 1024.0 / 1024.0;
+            let _ = app.emit(
+                "download-progress",
+                DownloadProgress {
+                    percent: None,
+                    line: format!("写入中 {mb:.1} MB · {name}"),
+                },
+            );
+        }
+    }
+}
+
 pub fn start_download(app: AppHandle, args: StartDownloadArgs) -> Result<(), String> {
     if DOWNLOAD_RUNNING.swap(true, Ordering::SeqCst) {
         return Err("已有下载任务在进行".into());
@@ -116,12 +221,13 @@ pub fn start_download(app: AppHandle, args: StartDownloadArgs) -> Result<(), Str
         args.quality.trim().to_string()
     };
 
-    tauri::async_runtime::spawn(async move {
-        let result = run_download(&app, &url, &category, &quality).await;
+    let app_for_job = app.clone();
+    std::thread::spawn(move || {
+        let result = run_download(&app_for_job, &url, &category, &quality);
         DOWNLOAD_RUNNING.store(false, Ordering::SeqCst);
         match result {
             Ok(path) => {
-                let _ = app.emit(
+                let _ = app_for_job.emit(
                     "download-finished",
                     DownloadFinished {
                         path: path.to_string_lossy().into_owned(),
@@ -129,7 +235,7 @@ pub fn start_download(app: AppHandle, args: StartDownloadArgs) -> Result<(), Str
                 );
             }
             Err(message) => {
-                let _ = app.emit("download-error", DownloadError { message });
+                let _ = app_for_job.emit("download-error", DownloadError { message });
             }
         }
     });
@@ -137,7 +243,7 @@ pub fn start_download(app: AppHandle, args: StartDownloadArgs) -> Result<(), Str
     Ok(())
 }
 
-async fn run_download(
+fn run_download(
     app: &AppHandle,
     url: &str,
     category: &str,
@@ -163,21 +269,18 @@ async fn run_download(
     let (bin, prefix) = resolve_ytdlp()?;
     let site = site::detect_site(url);
     if site == Site::Unknown {
-        let _ = app.emit(
-            "download-progress",
-            DownloadProgress {
-                percent: None,
-                line: "未识别站点，仍尝试用 yt-dlp 下载…".into(),
-            },
-        );
+        emit_line(app, "未识别站点，仍尝试用 yt-dlp 下载…");
     }
 
     let mut cmd = Command::new(&bin);
     for p in &prefix {
         cmd.arg(p);
     }
+    cmd.env("PYTHONUNBUFFERED", "1");
+    cmd.env("PYTHONIOENCODING", "utf-8");
     cmd.arg("--newline")
         .arg("--no-playlist")
+        .arg("--progress")
         .arg("-f")
         .arg(site::format_selector(quality))
         .arg("--merge-output-format")
@@ -192,18 +295,28 @@ async fn run_download(
         cmd.arg("--js-runtimes").arg("node");
     }
 
-    if let Some(proxy) = site::proxy_for(site, &settings) {
+    let proxy = site::proxy_for(site, &settings);
+    if let Some(ref proxy) = proxy {
         cmd.arg("--proxy").arg(proxy);
     }
 
     cmd.arg(url);
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
+    let site_label = match site {
+        Site::Youtube => "YouTube",
+        Site::Bilibili => "Bilibili",
+        Site::Unknown => "未知站点",
+    };
+    let proxy_label = proxy
+        .as_ref()
+        .map(|p| format!("代理 {p}"))
+        .unwrap_or_else(|| "直连".into());
     let _ = app.emit(
         "download-progress",
         DownloadProgress {
             percent: Some(0.0),
-            line: format!("启动: {bin} …"),
+            line: format!("启动 {bin} · {site_label} · {proxy_label} · 输出 {out_dir:?}"),
         },
     );
 
@@ -211,50 +324,37 @@ async fn run_download(
 
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
-    let app2 = app.clone();
-    let app3 = app.clone();
+    let last_path = Arc::new(std::sync::Mutex::new(None));
+    let stop_watch = Arc::new(AtomicBool::new(false));
 
+    let app_out = app.clone();
+    let path_out = last_path.clone();
     let out_handle = std::thread::spawn(move || {
-        let mut last_path: Option<String> = None;
         if let Some(out) = stdout {
-            let reader = BufReader::new(out);
-            for line in reader.lines().flatten() {
-                let percent = parse_percent(&line);
-                // after_move:filepath prints a bare path line sometimes
-                if !line.starts_with('[') && Path::new(&line).is_absolute() {
-                    last_path = Some(line.clone());
-                }
-                let _ = app2.emit(
-                    "download-progress",
-                    DownloadProgress {
-                        percent,
-                        line: line.clone(),
-                    },
-                );
-            }
+            pump_pipe(app_out, out, path_out);
         }
-        last_path
     });
 
+    let app_err = app.clone();
+    let path_err = last_path.clone();
     let err_handle = std::thread::spawn(move || {
         if let Some(err) = stderr {
-            let reader = BufReader::new(err);
-            for line in reader.lines().flatten() {
-                let percent = parse_percent(&line);
-                let _ = app3.emit(
-                    "download-progress",
-                    DownloadProgress {
-                        percent,
-                        line: line.clone(),
-                    },
-                );
-            }
+            pump_pipe(app_err, err, path_err);
         }
+    });
+
+    let app_watch = app.clone();
+    let watch_dir = out_dir.clone();
+    let stop_watch2 = stop_watch.clone();
+    let watch_handle = std::thread::spawn(move || {
+        watch_part_files(app_watch, watch_dir, stop_watch2);
     });
 
     let status = child.wait().map_err(|e| format!("等待进程失败: {e}"))?;
-    let printed_path = out_handle.join().ok().flatten();
+    stop_watch.store(true, Ordering::SeqCst);
+    let _ = out_handle.join();
     let _ = err_handle.join();
+    let _ = watch_handle.join();
 
     if !status.success() {
         return Err(format!("yt-dlp 退出码: {:?}", status.code()));
@@ -263,14 +363,15 @@ async fn run_download(
     settings.last_category = category.to_string();
     settings::save_settings(app, &settings)?;
 
-    if let Some(p) = printed_path {
-        let path = PathBuf::from(&p);
-        if path.exists() {
-            return Ok(path);
+    if let Ok(guard) = last_path.lock() {
+        if let Some(p) = guard.clone() {
+            let path = PathBuf::from(&p);
+            if path.exists() {
+                return Ok(path);
+            }
         }
     }
 
-    // Fallback: newest video file in category dir
     let videos = library::list_videos(&root, category)?;
     videos
         .into_iter()

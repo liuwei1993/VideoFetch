@@ -35,23 +35,45 @@ export function DownloadView({
   }, [defaultQuality]);
 
   useEffect(() => {
+    let cancelled = false;
     const unsubs: Array<() => void> = [];
-    listen<DownloadProgress>("download-progress", (e) => {
-      if (e.payload.percent != null) setPercent(e.payload.percent);
-      setLogs((prev) => [...prev.slice(-200), e.payload.line]);
-    }).then((u) => unsubs.push(u));
-    listen<DownloadFinished>("download-finished", (e) => {
-      setBusy(false);
-      setDonePath(e.payload.path);
-      setPercent(100);
-      onCategoriesChanged();
-    }).then((u) => unsubs.push(u));
-    listen<DownloadError>("download-error", (e) => {
-      setBusy(false);
-      setError(e.payload.message);
-    }).then((u) => unsubs.push(u));
-    return () => unsubs.forEach((u) => u());
-  }, [onCategoriesChanged]);
+
+    (async () => {
+      const u1 = await listen<DownloadProgress>("download-progress", (e) => {
+        if (cancelled) return;
+        if (e.payload.percent != null) setPercent(e.payload.percent);
+        setLogs((prev) => {
+          const next = [...prev, e.payload.line];
+          return next.length > 200 ? next.slice(-200) : next;
+        });
+      });
+      const u2 = await listen<DownloadFinished>("download-finished", (e) => {
+        if (cancelled) return;
+        setBusy(false);
+        setDonePath(e.payload.path);
+        setPercent(100);
+        onCategoriesChanged();
+      });
+      const u3 = await listen<DownloadError>("download-error", (e) => {
+        if (cancelled) return;
+        setBusy(false);
+        setError(e.payload.message);
+      });
+      if (cancelled) {
+        u1();
+        u2();
+        u3();
+      } else {
+        unsubs.push(u1, u2, u3);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      unsubs.forEach((u) => u());
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- subscribe once; avoid dropping events on parent refresh
+  }, []);
 
   async function ensureCategorySelected(): Promise<string> {
     const name = newCategory.trim();
