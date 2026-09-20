@@ -93,8 +93,8 @@ fn start_download(app: tauri::AppHandle, args: StartDownloadArgs) -> Result<(), 
 }
 
 #[tauri::command]
-fn stop_download() -> Result<(), String> {
-    download::stop_download()
+fn stop_download(app: tauri::AppHandle) -> Result<(), String> {
+    download::stop_download(app)
 }
 
 #[tauri::command]

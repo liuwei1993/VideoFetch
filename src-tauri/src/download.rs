@@ -1,4 +1,5 @@
 use crate::library::{self, UNCATEGORIZED};
+use crate::queue;
 use crate::settings::{self};
 use crate::site::{self, Site};
 use serde::Deserialize;
@@ -117,6 +118,18 @@ pub(crate) fn is_download_cancelled() -> bool {
     DOWNLOAD_CANCELLED.load(Ordering::SeqCst)
 }
 
+fn persist_item_status(app: &AppHandle, index: usize, status: queue::ItemStatus) {
+    if let Ok(Some(mut q)) = queue::load_queue(app) {
+        q.set_item_status(index, status);
+        q.touch();
+        let _ = queue::save_queue(app, &q);
+    }
+}
+
+fn persist_new_queue(app: &AppHandle, q: queue::DownloadQueue) {
+    let _ = queue::save_queue(app, &q);
+}
+
 fn kill_pid(pid: u32) {
     // Kill the process group first (covers ffmpeg children), then the pid.
     let _ = Command::new("kill")
@@ -135,7 +148,7 @@ fn kill_pid(pid: u32) {
         .status();
 }
 
-pub fn stop_download() -> Result<(), String> {
+pub fn stop_download(app: AppHandle) -> Result<(), String> {
     if !DOWNLOAD_RUNNING.load(Ordering::SeqCst) {
         return Err("当前没有下载任务".into());
     }
@@ -148,6 +161,7 @@ pub fn stop_download() -> Result<(), String> {
     for pid in pids {
         kill_pid(pid);
     }
+    let _ = queue::clear_queue(&app);
     Ok(())
 }
 
@@ -422,7 +436,27 @@ pub fn start_download(app: AppHandle, args: StartDownloadArgs) -> Result<(), Str
                 )?;
                 Ok(SessionOutcome::Batch)
             } else {
-                Ok(SessionOutcome::Single(run_download(
+                let single_queue = queue::DownloadQueue {
+                    version: 1,
+                    kind: queue::QueueKind::Single,
+                    page_url: url.clone(),
+                    category: category.clone(),
+                    quality: quality.clone(),
+                    audio_only,
+                    updated_at: String::new(),
+                    items: vec![queue::QueueItem {
+                        index: 0,
+                        id: url.clone(),
+                        title: url.clone(),
+                        url: url.clone(),
+                        status: queue::ItemStatus::Downloading,
+                    }],
+                };
+                let mut sq = single_queue;
+                sq.touch();
+                persist_new_queue(&app_for_job, sq);
+
+                match run_download(
                     &app_for_job,
                     &url,
                     &category,
@@ -430,7 +464,20 @@ pub fn start_download(app: AppHandle, args: StartDownloadArgs) -> Result<(), Str
                     audio_only,
                     true,
                     true,
-                )?))
+                ) {
+                    Ok(path) => {
+                        let _ = queue::clear_queue(&app_for_job);
+                        Ok(SessionOutcome::Single(path))
+                    }
+                    Err(message) if message.contains("已停止") => {
+                        let _ = queue::clear_queue(&app_for_job);
+                        Err(message)
+                    }
+                    Err(message) => {
+                        persist_item_status(&app_for_job, 0, queue::ItemStatus::Failed);
+                        Err(message)
+                    }
+                }
             }
         })();
         clear_child_pids();
@@ -675,6 +722,30 @@ fn run_batch_download(
         },
     );
 
+    let queue_items: Vec<queue::QueueItem> = items
+        .iter()
+        .enumerate()
+        .map(|(index, i)| queue::QueueItem {
+            index,
+            id: i.id.clone(),
+            title: i.title.clone(),
+            url: crate::playlist::bilibili_video_url(&i.id),
+            status: queue::ItemStatus::Pending,
+        })
+        .collect();
+    let mut q = queue::DownloadQueue {
+        version: 1,
+        kind: queue::QueueKind::Batch,
+        page_url: page_url.to_string(),
+        category: category.to_string(),
+        quality: quality.to_string(),
+        audio_only,
+        updated_at: String::new(),
+        items: queue_items,
+    };
+    q.touch();
+    persist_new_queue(app, q);
+
     let concurrency = settings::clamp_max_concurrent(settings.max_concurrent_downloads) as usize;
     let next = Arc::new(AtomicUsize::new(0));
     let succeeded = Arc::new(AtomicUsize::new(0));
@@ -702,6 +773,7 @@ fn run_batch_download(
                     break;
                 }
                 let item = &items[index];
+                persist_item_status(&app, index, queue::ItemStatus::Downloading);
                 let _ = app.emit(
                     "download-item-started",
                     DownloadItemStarted {
@@ -721,6 +793,7 @@ fn run_batch_download(
                 ) {
                     Ok(path) => {
                         succeeded.fetch_add(1, Ordering::SeqCst);
+                        persist_item_status(&app, index, queue::ItemStatus::Done);
                         let _ = app.emit(
                             "download-item-finished",
                             DownloadItemFinished {
@@ -735,6 +808,7 @@ fn run_batch_download(
                             continue;
                         }
                         failed.fetch_add(1, Ordering::SeqCst);
+                        persist_item_status(&app, index, queue::ItemStatus::Failed);
                         let _ = app.emit(
                             "download-item-error",
                             DownloadItemError {
@@ -768,6 +842,12 @@ fn run_batch_download(
             cancelled,
         },
     );
+
+    if DOWNLOAD_CANCELLED.load(Ordering::SeqCst) {
+        let _ = queue::clear_queue(app);
+    } else if failed_n == 0 {
+        let _ = queue::clear_queue(app);
+    }
 
     let mut settings = settings::load_settings(app)?;
     settings.last_category = category.to_string();
