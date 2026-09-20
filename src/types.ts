@@ -29,7 +29,33 @@ export type DownloadError = {
   message: string;
 };
 
-export type BatchItemMeta = { id: string; title: string };
+export type QueueKind = "batch" | "single";
+export type ItemStatus = "pending" | "downloading" | "done" | "failed";
+
+export type QueueItem = {
+  index: number;
+  id: string;
+  title: string;
+  url: string;
+  status: ItemStatus;
+};
+
+export type DownloadQueue = {
+  version: number;
+  kind: QueueKind;
+  page_url: string;
+  category: string;
+  quality: string;
+  audio_only: boolean;
+  updated_at: string;
+  items: QueueItem[];
+};
+
+export type BatchItemMeta = {
+  id: string;
+  title: string;
+  status?: string | null;
+};
 export type DownloadBatchStarted = { total: number; items: BatchItemMeta[] };
 export type DownloadItemStarted = { index: number; id: string };
 export type DownloadItemFinished = { index: number; id: string; path: string };

@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Settings, VideoItem } from "./types";
+import type { DownloadQueue, Settings, VideoItem } from "./types";
 
 export const api = {
   getSettings: () => invoke<Settings>("get_settings"),
@@ -33,4 +33,7 @@ export const api = {
     }),
   stopDownload: () => invoke<void>("stop_download"),
   downloadRunning: () => invoke<boolean>("download_running"),
+  getDownloadQueue: () => invoke<DownloadQueue | null>("get_download_queue"),
+  resumeDownloadQueue: () => invoke<void>("resume_download_queue"),
+  discardDownloadQueue: () => invoke<void>("discard_download_queue"),
 };
