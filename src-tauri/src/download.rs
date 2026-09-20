@@ -494,6 +494,7 @@ fn run_download(
     cmd.env("PYTHONIOENCODING", "utf-8");
     cmd.arg("--newline")
         .arg("--no-playlist")
+        .arg("--continue")
         .arg("--progress");
     if audio_only {
         cmd.arg("-x")
