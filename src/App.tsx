@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Alert, Layout, Menu, Typography, theme } from "antd";
+import { Alert, Layout, Menu, Modal, Typography, theme } from "antd";
 import {
   CloudDownloadOutlined,
   FolderOpenOutlined,
@@ -7,7 +7,7 @@ import {
   VideoCameraOutlined,
 } from "@ant-design/icons";
 import { api } from "./api";
-import type { Settings } from "./types";
+import type { DownloadQueue, Settings } from "./types";
 import { DownloadView } from "./views/DownloadView";
 import { LibraryView } from "./views/LibraryView";
 import { SettingsView } from "./views/SettingsView";
@@ -16,11 +16,23 @@ const { Header, Content } = Layout;
 
 type Tab = "download" | "library" | "settings";
 
+function queueSummary(q: DownloadQueue): string {
+  const done = q.items.filter((i) => i.status === "done").length;
+  const todo = q.items.length - done;
+  if (q.kind === "batch") {
+    return `合集 · 共 ${q.items.length} · 已完成 ${done} · 待处理 ${todo} · 分类「${q.category}」`;
+  }
+  const title = q.items[0]?.title || q.page_url;
+  return `单视频 · ${title} · 分类「${q.category}」`;
+}
+
 function App() {
   const [tab, setTab] = useState<Tab>("download");
   const [settings, setSettings] = useState<Settings | null>(null);
   const [categories, setCategories] = useState<string[]>([]);
   const [bootError, setBootError] = useState<string | null>(null);
+  const [pendingQueue, setPendingQueue] = useState<DownloadQueue | null>(null);
+  const [resumeSeed, setResumeSeed] = useState<DownloadQueue | null>(null);
   const { token } = theme.useToken();
 
   const refresh = useCallback(async () => {
@@ -32,16 +44,41 @@ function App() {
     setCategories(cats);
   }, []);
 
+  const onResumeSeedConsumed = useCallback(() => setResumeSeed(null), []);
+
   useEffect(() => {
     (async () => {
       try {
         await api.ensureLibrary();
         await refresh();
+        const q = await api.getDownloadQueue();
+        if (q) setPendingQueue(q);
       } catch (e) {
         setBootError(String(e));
       }
     })();
   }, [refresh]);
+
+  async function onResumeQueue() {
+    if (!pendingQueue) return;
+    setResumeSeed(pendingQueue);
+    setPendingQueue(null);
+    setTab("download");
+    try {
+      await api.resumeDownloadQueue();
+    } catch (e) {
+      setBootError(String(e));
+    }
+  }
+
+  async function onDiscardQueue() {
+    try {
+      await api.discardDownloadQueue();
+      setPendingQueue(null);
+    } catch (e) {
+      setBootError(String(e));
+    }
+  }
 
   return (
     <Layout className="app-shell">
@@ -94,6 +131,8 @@ function App() {
             defaultCategory={settings.last_category || "未分类"}
             defaultQuality={settings.default_quality || "720"}
             onCategoriesChanged={refresh}
+            resumeSeed={resumeSeed}
+            onResumeSeedConsumed={onResumeSeedConsumed}
           />
         )}
         {tab === "library" && (
@@ -101,6 +140,19 @@ function App() {
         )}
         {tab === "settings" && <SettingsView onSaved={refresh} />}
       </Content>
+
+      <Modal
+        title="未完成的下载"
+        open={!!pendingQueue}
+        okText="继续"
+        cancelText="丢弃"
+        onOk={onResumeQueue}
+        onCancel={onDiscardQueue}
+        closable={false}
+        maskClosable={false}
+      >
+        {pendingQueue && <p>{queueSummary(pendingQueue)}</p>}
+      </Modal>
     </Layout>
   );
 }

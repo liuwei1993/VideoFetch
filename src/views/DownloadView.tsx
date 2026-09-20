@@ -27,6 +27,7 @@ import type {
   DownloadItemFinished,
   DownloadItemStarted,
   DownloadProgress,
+  DownloadQueue,
 } from "../types";
 
 type TaskStatus = "pending" | "downloading" | "done" | "failed" | "cancelled";
@@ -52,13 +53,42 @@ type Props = {
   defaultCategory: string;
   defaultQuality: string;
   onCategoriesChanged: () => void;
+  resumeSeed: DownloadQueue | null;
+  onResumeSeedConsumed: () => void;
 };
+
+function rowFromQueueItem(it: DownloadQueue["items"][number]): TaskRow {
+  const isDone = it.status === "done";
+  return {
+    index: it.index,
+    id: it.id,
+    title: it.title,
+    status: isDone ? "done" : "pending",
+    detail: isDone ? "已保存" : "",
+  };
+}
+
+function rowFromBatchMeta(
+  it: DownloadBatchStarted["items"][number],
+  index: number,
+): TaskRow {
+  const isDone = it.status === "done";
+  return {
+    index,
+    id: it.id,
+    title: it.title,
+    status: isDone ? "done" : "pending",
+    detail: isDone ? "已保存" : "",
+  };
+}
 
 export function DownloadView({
   categories,
   defaultCategory,
   defaultQuality,
   onCategoriesChanged,
+  resumeSeed,
+  onResumeSeedConsumed,
 }: Props) {
   const [url, setUrl] = useState("");
   const [category, setCategory] = useState(defaultCategory);
@@ -97,6 +127,29 @@ export function DownloadView({
   useEffect(() => {
     setQuality(defaultQuality);
   }, [defaultQuality]);
+
+  useEffect(() => {
+    if (!resumeSeed) return;
+    setError(null);
+    setDonePath(null);
+    setLogs([]);
+    setPercent(0);
+    setSpeed(null);
+    setEta(null);
+    setBatchResult(null);
+    setBusy(true);
+    setBatchMode(resumeSeed.kind === "batch");
+    setCategory(resumeSeed.category);
+    setQuality(resumeSeed.quality);
+    setAudioOnly(resumeSeed.audio_only);
+    if (resumeSeed.kind === "single") {
+      setUrl(resumeSeed.page_url);
+      setTasks([]);
+    } else {
+      setTasks(resumeSeed.items.map(rowFromQueueItem));
+    }
+    onResumeSeedConsumed();
+  }, [resumeSeed, onResumeSeedConsumed]);
 
   useEffect(() => {
     if (logRef.current) {
@@ -149,13 +202,7 @@ export function DownloadView({
           setBatchMode(true);
           setBatchResult(null);
           setTasks(
-            e.payload.items.map((it, index) => ({
-              index,
-              id: it.id,
-              title: it.title,
-              status: "pending" as const,
-              detail: "",
-            }))
+            e.payload.items.map((it, index) => rowFromBatchMeta(it, index)),
           );
         }
       );
