@@ -13,11 +13,39 @@ import {
   Row,
   Select,
   Space,
+  Table,
   Typography,
 } from "antd";
 import { CloudDownloadOutlined, StopOutlined } from "@ant-design/icons";
 import { api } from "../api";
-import type { DownloadError, DownloadFinished, DownloadProgress } from "../types";
+import type {
+  DownloadBatchFinished,
+  DownloadBatchStarted,
+  DownloadError,
+  DownloadFinished,
+  DownloadItemError,
+  DownloadItemFinished,
+  DownloadItemStarted,
+  DownloadProgress,
+} from "../types";
+
+type TaskStatus = "pending" | "downloading" | "done" | "failed" | "cancelled";
+
+type TaskRow = {
+  index: number;
+  id: string;
+  title: string;
+  status: TaskStatus;
+  detail: string;
+};
+
+const statusLabel: Record<TaskStatus, string> = {
+  pending: "等待",
+  downloading: "下载中",
+  done: "完成",
+  failed: "失败",
+  cancelled: "已取消",
+};
 
 type Props = {
   categories: string[];
@@ -44,9 +72,23 @@ export function DownloadView({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [donePath, setDonePath] = useState<string | null>(null);
+  const [tasks, setTasks] = useState<TaskRow[]>([]);
+  const [batchMode, setBatchMode] = useState(false);
+  const [batchResult, setBatchResult] = useState<DownloadBatchFinished | null>(
+    null
+  );
   const logRef = useRef<HTMLPreElement>(null);
   const onCategoriesChangedRef = useRef(onCategoriesChanged);
   onCategoriesChangedRef.current = onCategoriesChanged;
+  const batchModeRef = useRef(false);
+  batchModeRef.current = batchMode;
+
+  const done = tasks.filter((t) => t.status === "done").length;
+  const failed = tasks.filter((t) => t.status === "failed").length;
+  const active = tasks.filter((t) => t.status === "downloading").length;
+  const summaryText = batchMode
+    ? `共 ${tasks.length} · 完成 ${done} · 失败 ${failed} · 进行中 ${active}`
+    : null;
 
   useEffect(() => {
     setCategory(defaultCategory);
@@ -79,6 +121,7 @@ export function DownloadView({
       });
       const u2 = await listen<DownloadFinished>("download-finished", (e) => {
         if (cancelled) return;
+        if (batchModeRef.current) return;
         setBusy(false);
         setDonePath(e.payload.path);
         setPercent(100);
@@ -88,6 +131,7 @@ export function DownloadView({
       });
       const u3 = await listen<DownloadError>("download-error", (e) => {
         if (cancelled) return;
+        if (batchModeRef.current) return;
         setBusy(false);
         setSpeed(null);
         setEta(null);
@@ -98,12 +142,101 @@ export function DownloadView({
           setError(e.payload.message);
         }
       });
+      const uBatchStart = await listen<DownloadBatchStarted>(
+        "download-batch-started",
+        (e) => {
+          if (cancelled) return;
+          setBatchMode(true);
+          setBatchResult(null);
+          setTasks(
+            e.payload.items.map((it, index) => ({
+              index,
+              id: it.id,
+              title: it.title,
+              status: "pending" as const,
+              detail: "",
+            }))
+          );
+        }
+      );
+      const uItemStart = await listen<DownloadItemStarted>(
+        "download-item-started",
+        (e) => {
+          if (cancelled) return;
+          setTasks((prev) =>
+            prev.map((t) =>
+              t.index === e.payload.index
+                ? { ...t, status: "downloading", detail: "" }
+                : t
+            )
+          );
+        }
+      );
+      const uItemDone = await listen<DownloadItemFinished>(
+        "download-item-finished",
+        (e) => {
+          if (cancelled) return;
+          setTasks((prev) =>
+            prev.map((t) =>
+              t.index === e.payload.index
+                ? { ...t, status: "done", detail: e.payload.path }
+                : t
+            )
+          );
+        }
+      );
+      const uItemErr = await listen<DownloadItemError>(
+        "download-item-error",
+        (e) => {
+          if (cancelled) return;
+          setTasks((prev) =>
+            prev.map((t) =>
+              t.index === e.payload.index
+                ? { ...t, status: "failed", detail: e.payload.message }
+                : t
+            )
+          );
+        }
+      );
+      const uBatchEnd = await listen<DownloadBatchFinished>(
+        "download-batch-finished",
+        (e) => {
+          if (cancelled) return;
+          setBusy(false);
+          setSpeed(null);
+          setEta(null);
+          setTasks((prev) =>
+            prev.map((t) =>
+              t.status === "pending" || t.status === "downloading"
+                ? { ...t, status: "cancelled", detail: t.detail || "已取消" }
+                : t
+            )
+          );
+          setBatchResult(e.payload);
+          setPercent(100);
+          onCategoriesChangedRef.current();
+        }
+      );
       if (cancelled) {
         u1();
         u2();
         u3();
+        uBatchStart();
+        uItemStart();
+        uItemDone();
+        uItemErr();
+        uBatchEnd();
       } else {
-        unsubs.push(u1, u2, u3);
+        unsubs.push(
+          u1,
+          u2,
+          u3,
+          uBatchStart,
+          uItemStart,
+          uItemDone,
+          uItemErr,
+          uBatchEnd
+        );
       }
     })();
 
@@ -132,6 +265,9 @@ export function DownloadView({
     setPercent(0);
     setSpeed(null);
     setEta(null);
+    setTasks([]);
+    setBatchMode(false);
+    setBatchResult(null);
     try {
       const cat = await ensureCategorySelected();
       setBusy(true);
@@ -159,7 +295,7 @@ export function DownloadView({
             size="large"
             value={url}
             onChange={(e) => setUrl(e.target.value)}
-            placeholder="粘贴 YouTube / Bilibili 链接"
+            placeholder="粘贴 YouTube / Bilibili 链接（支持合集）"
             allowClear
           />
         </Form.Item>
@@ -249,6 +385,57 @@ export function DownloadView({
         />
       )}
 
+      {batchMode && tasks.length > 0 && (
+        <>
+          <Typography.Paragraph type="secondary">
+            {summaryText}
+          </Typography.Paragraph>
+          <Table
+            size="small"
+            pagination={false}
+            rowKey="id"
+            dataSource={tasks}
+            scroll={{ y: 320 }}
+            style={{ marginBottom: 16 }}
+            columns={[
+              {
+                title: "#",
+                dataIndex: "index",
+                width: 56,
+                render: (i: number) => i + 1,
+              },
+              { title: "标题", dataIndex: "title", ellipsis: true },
+              {
+                title: "状态",
+                dataIndex: "status",
+                width: 88,
+                render: (s: TaskStatus) => statusLabel[s],
+              },
+              {
+                title: "详情",
+                dataIndex: "detail",
+                ellipsis: true,
+                render: (d: string, row: TaskRow) =>
+                  row.status === "failed" ? (
+                    <Typography.Text type="danger" ellipsis={{ tooltip: d }}>
+                      {d}
+                    </Typography.Text>
+                  ) : row.status === "done" ? (
+                    <Typography.Text
+                      type="secondary"
+                      ellipsis={{ tooltip: d }}
+                    >
+                      已保存
+                    </Typography.Text>
+                  ) : (
+                    d
+                  ),
+              },
+            ]}
+          />
+        </>
+      )}
+
       {error && (
         <Alert
           type="error"
@@ -259,7 +446,20 @@ export function DownloadView({
           style={{ marginBottom: 16 }}
         />
       )}
-      {donePath && (
+      {batchResult && (
+        <Alert
+          type={batchResult.failed === 0 ? "success" : "warning"}
+          showIcon
+          closable
+          message={
+            batchResult.failed === 0 ? "批量下载完成" : "批量下载结束"
+          }
+          description={`完成 ${batchResult.succeeded} · 失败 ${batchResult.failed} · 取消 ${batchResult.cancelled}`}
+          onClose={() => setBatchResult(null)}
+          style={{ marginBottom: 16 }}
+        />
+      )}
+      {donePath && !batchMode && (
         <Alert
           type="success"
           showIcon
