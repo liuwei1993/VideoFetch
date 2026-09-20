@@ -1,4 +1,5 @@
 mod download;
+mod queue;
 mod library;
 mod playlist;
 mod settings;
