@@ -30,6 +30,10 @@ src-tauri/binaries
 # Local git worktrees
 .worktrees/
 
+# Python
+__pycache__/
+*.pyc
+
 # Local downloads / media
 downloads/
 *.mp4
