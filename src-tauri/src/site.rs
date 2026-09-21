@@ -53,8 +53,8 @@ fn is_missav_host(url_lower: &str) -> bool {
     )
 }
 
-/// Single watch pages such as `/cn/clot-044`. Homepage (`/dm247/cn`) and
-/// listing pages are not treated as a downloadable video in this phase.
+/// Single watch pages such as `/cn/clot-044` or `/dm127/cn/mizd-357`.
+/// Homepage (`/dm247/cn`) and listing pages are not downloadable videos.
 pub fn is_missav_single_video_url(url: &str) -> bool {
     if detect_site(url) != Site::Missav {
         return false;
@@ -72,9 +72,14 @@ pub fn is_missav_single_video_url(url: &str) -> bool {
     let id = match segs.as_slice() {
         [id] => *id,
         [lang, id] if MISSAV_LANGS.contains(lang) => *id,
+        [mirror, lang, id] if is_missav_mirror(mirror) && MISSAV_LANGS.contains(lang) => *id,
         _ => return false,
     };
     is_missav_video_id(id)
+}
+
+fn is_missav_mirror(seg: &str) -> bool {
+    seg.len() > 2 && seg.starts_with("dm") && seg[2..].bytes().all(|b| b.is_ascii_digit())
 }
 
 fn is_missav_video_id(id: &str) -> bool {
@@ -297,6 +302,12 @@ mod tests {
         ));
         assert!(is_missav_single_video_url(
             "https://missav.com/fc2-ppv-4975133"
+        ));
+        assert!(is_missav_single_video_url(
+            "https://missav.ws/dm127/cn/mizd-357"
+        ));
+        assert!(is_missav_single_video_url(
+            "https://missav.ai/dm247/en/blk-470-uncensored-leak"
         ));
         assert!(!is_missav_single_video_url("https://missav.ws/dm247/cn"));
         assert!(!is_missav_single_video_url("https://missav.ai/dm247"));

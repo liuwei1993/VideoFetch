@@ -141,6 +141,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
+            download::init_resource_dir(app.handle());
             let handle = app.handle().clone();
             let _ = with_root(&handle, |root, _| {
                 let _ = library::shorten_all_titles(root);

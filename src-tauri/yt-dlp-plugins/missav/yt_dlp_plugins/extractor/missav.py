@@ -8,8 +8,12 @@ class MissAVIE(InfoExtractor):
     IE_NAME = 'missav'
     _VALID_URL = (
         r'(?i)https?://(?:www\.)?missav\.(?:ws|com|ai)/'
+        r'(?:dm\d+/)?'
         r'(?:[a-z]{2,3}/)?(?P<id>[\w-]+)/?(?:[?#].*)?$'
     )
+    _LANGS = {
+        'cn', 'en', 'ja', 'ko', 'ms', 'th', 'de', 'fr', 'vi', 'id', 'fil', 'pt',
+    }
     _PAGE_HOST = 'https://missav.ai'
     _LISTING_IDS = {
         'makers', 'actresses', 'genres', 'articles', 'ads',
@@ -18,15 +22,22 @@ class MissAVIE(InfoExtractor):
 
     def _real_extract(self, url):
         video_id = self._match_id(url)
-        if re.fullmatch(r'(?i)dm\d+', video_id) or video_id.lower() in self._LISTING_IDS:
+        if (
+            re.fullmatch(r'(?i)dm\d+', video_id)
+            or video_id.lower() in self._LISTING_IDS
+            or video_id.lower() in self._LANGS
+        ):
             raise ExtractorError('Not a MissAV single video URL', expected=True)
 
         # missav.ws is often behind a Cloudflare challenge; .ai serves the same pages.
+        # Drop the /dmNNN/ mirror prefix so the canonical watch path is requested.
+        # The app passes `--impersonate Safari-18.0`; Chrome's fingerprint is blocked.
         page_url = re.sub(
             r'(?i)^https?://(?:www\.)?missav\.(?:ws|com|ai)',
             self._PAGE_HOST,
             url,
         )
+        page_url = re.sub(r'(?i)(/)dm\d+/', r'\1', page_url, count=1)
         webpage = self._download_webpage(page_url, video_id)
         m3u8_url = self._playlist_from_packed(webpage)
         headers = {

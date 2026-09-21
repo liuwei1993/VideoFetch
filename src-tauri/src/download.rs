@@ -197,6 +197,7 @@ impl Drop for SlotGuard<'_> {
 }
 
 static SLOT_POOL: LazyLock<SlotPool> = LazyLock::new(SlotPool::new);
+static RESOURCE_DIR: LazyLock<Mutex<Option<PathBuf>>> = LazyLock::new(|| Mutex::new(None));
 static JOB_SEQ: AtomicU64 = AtomicU64::new(1);
 static JOBS: LazyLock<Mutex<HashMap<String, queue::DownloadJob>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -534,6 +535,12 @@ pub fn list_download_jobs(app: AppHandle) -> Result<Vec<queue::DownloadJob>, Str
     Ok(snapshot_jobs())
 }
 
+pub fn init_resource_dir(app: &AppHandle) {
+    if let Ok(dir) = app.path().resource_dir() {
+        *RESOURCE_DIR.lock().expect("resource dir lock") = Some(dir);
+    }
+}
+
 pub fn resolve_ytdlp() -> Result<(String, Vec<String>), String> {
     if let Ok(custom) = std::env::var("VIDEOFETCH_YTDLP") {
         if !custom.trim().is_empty() {
@@ -563,25 +570,27 @@ pub fn resolve_ytdlp() -> Result<(String, Vec<String>), String> {
     Err("未找到 yt-dlp。AppImage 应自带 yt-dlp；开发时请运行 scripts/fetch-linux-sidecars.sh，或安装 uv / yt-dlp，也可设置 VIDEOFETCH_YTDLP。".into())
 }
 
-/// Sidecar next to the app binary (AppImage / 安装包), or the dev copy under src-tauri/binaries.
+/// Sidecar next to the app binary, in bundled resources, or the dev copy under src-tauri/binaries.
 pub fn bundled_executable(name: &str) -> Option<PathBuf> {
+    let mut candidates = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            let next_to_app = dir.join(name);
-            if next_to_app.is_file() {
-                return Some(next_to_app);
-            }
+            candidates.push(dir.join(name));
         }
     }
-    let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("binaries").join(format!(
+    if let Ok(guard) = RESOURCE_DIR.lock() {
+        if let Some(res) = guard.as_ref() {
+            candidates.push(res.join(name));
+            candidates.push(res.join("binaries").join(name));
+        }
+    }
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("binaries");
+    candidates.push(manifest.join(name));
+    candidates.push(manifest.join(format!(
         "{name}-{}",
         env!("VIDEOFETCH_HOST_TRIPLE")
-    ));
-    if dev.is_file() {
-        Some(dev)
-    } else {
-        None
-    }
+    )));
+    candidates.into_iter().find(|p| p.is_file())
 }
 
 /// Point yt-dlp at the bundled ffmpeg directory when present.
@@ -1192,7 +1201,7 @@ fn run_download_once(
     let site = site::detect_site(url);
     if site == Site::Missav && !site::is_missav_single_video_url(url) {
         return Err(
-            "MissAV 目前仅支持单视频链接，例如 https://missav.ws/cn/番号（首页和列表稍后支持）"
+            "MissAV 目前仅支持单视频链接，例如 https://missav.ws/cn/番号 或 https://missav.ws/dm127/cn/番号（首页和列表稍后支持）"
                 .into(),
         );
     }
@@ -1247,6 +1256,8 @@ fn run_download_once(
         for dir in &plugin_dirs {
             cmd.arg("--plugin-dirs").arg(dir);
         }
+        // Cloudflare blocks the default client. The bundled yt-dlp can impersonate Safari.
+        cmd.arg("--impersonate").arg("Safari-18.0");
     }
 
     cmd.arg(url);
