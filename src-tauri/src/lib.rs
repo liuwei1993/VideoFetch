@@ -5,7 +5,8 @@ mod queue;
 mod settings;
 mod site;
 
-use download::StartDownloadArgs;
+use download::{StartDownloadArgs, StartDownloadResult};
+use queue::DownloadJob;
 use settings::Settings;
 
 fn with_root<T>(
@@ -29,7 +30,9 @@ fn save_settings(app: tauri::AppHandle, mut settings: Settings) -> Result<(), St
         settings::clamp_max_concurrent(settings.max_concurrent_downloads);
     let root = settings::library_root_path(&settings);
     library::ensure_library_root(&root)?;
-    settings::save_settings(&app, &settings)
+    settings::save_settings(&app, &settings)?;
+    download::set_slot_capacity(settings.max_concurrent_downloads);
+    Ok(())
 }
 
 #[tauri::command]
@@ -90,13 +93,18 @@ fn open_video(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn start_download(app: tauri::AppHandle, args: StartDownloadArgs) -> Result<(), String> {
+fn start_download(app: tauri::AppHandle, args: StartDownloadArgs) -> Result<StartDownloadResult, String> {
     download::start_download(app, args)
 }
 
 #[tauri::command]
-fn stop_download(app: tauri::AppHandle) -> Result<(), String> {
-    download::stop_download(app)
+fn stop_download(app: tauri::AppHandle, job_id: String) -> Result<(), String> {
+    download::stop_download(app, job_id)
+}
+
+#[tauri::command]
+fn stop_all_downloads(app: tauri::AppHandle) -> Result<(), String> {
+    download::stop_all_downloads(app)
 }
 
 #[tauri::command]
@@ -105,8 +113,17 @@ fn download_running() -> bool {
 }
 
 #[tauri::command]
-fn get_download_queue(app: tauri::AppHandle) -> Result<Option<queue::DownloadQueue>, String> {
-    queue::load_resumable_queue(&app)
+fn list_download_jobs(app: tauri::AppHandle) -> Result<Vec<DownloadJob>, String> {
+    download::list_download_jobs(app)
+}
+
+#[tauri::command]
+fn get_download_queue(app: tauri::AppHandle) -> Result<Vec<DownloadJob>, String> {
+    download::list_download_jobs(app).map(|jobs| {
+        jobs.into_iter()
+            .filter(|j| j.is_resumable())
+            .collect()
+    })
 }
 
 #[tauri::command]
@@ -145,7 +162,9 @@ pub fn run() {
             open_video,
             start_download,
             stop_download,
+            stop_all_downloads,
             download_running,
+            list_download_jobs,
             get_download_queue,
             resume_download_queue,
             discard_download_queue,

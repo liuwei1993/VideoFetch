@@ -1,51 +1,48 @@
 import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
-  Alert,
   Button,
   Card,
   Checkbox,
   Col,
-  Collapse,
+  Empty,
   Form,
   Input,
+  Modal,
   Progress,
   Row,
   Select,
   Space,
-  Table,
+  Tag,
   Typography,
+  message,
 } from "antd";
-import { CloudDownloadOutlined, StopOutlined } from "@ant-design/icons";
+import {
+  CloudDownloadOutlined,
+  PlusOutlined,
+  StopOutlined,
+} from "@ant-design/icons";
 import { api } from "../api";
 import type {
-  DownloadBatchFinished,
-  DownloadBatchStarted,
   DownloadError,
   DownloadFinished,
-  DownloadItemError,
-  DownloadItemFinished,
-  DownloadItemStarted,
+  DownloadJob,
   DownloadProgress,
-  DownloadQueue,
+  JobStatus,
 } from "../types";
 
-type TaskStatus = "pending" | "downloading" | "done" | "failed" | "cancelled";
-
-type TaskRow = {
-  index: number;
-  id: string;
-  title: string;
-  status: TaskStatus;
-  detail: string;
+const statusMeta: Record<JobStatus, { label: string; color: string }> = {
+  pending: { label: "等待中", color: "default" },
+  downloading: { label: "下载中", color: "processing" },
+  done: { label: "完成", color: "success" },
+  failed: { label: "失败", color: "error" },
+  cancelled: { label: "已取消", color: "warning" },
 };
 
-const statusLabel: Record<TaskStatus, string> = {
-  pending: "等待",
-  downloading: "下载中",
-  done: "完成",
-  failed: "失败",
-  cancelled: "已取消",
+const qualityLabel: Record<string, string> = {
+  "720": "720p",
+  "1080": "1080p",
+  best: "最高",
 };
 
 type Props = {
@@ -53,34 +50,40 @@ type Props = {
   defaultCategory: string;
   defaultQuality: string;
   onCategoriesChanged: () => void;
-  resumeSeed: DownloadQueue | null;
-  onResumeSeedConsumed: () => void;
-  resumeResetKey: number;
+  resumeTick: number;
 };
 
-function rowFromQueueItem(it: DownloadQueue["items"][number]): TaskRow {
-  const isDone = it.status === "done";
-  return {
-    index: it.index,
-    id: it.id,
-    title: it.title,
-    status: isDone ? "done" : "pending",
-    detail: isDone ? "已保存" : "",
-  };
+function upsertJob(prev: DownloadJob[], job: DownloadJob): DownloadJob[] {
+  const i = prev.findIndex((j) => j.id === job.id);
+  if (i === -1) return [job, ...prev];
+  const next = prev.slice();
+  next[i] = { ...next[i], ...job };
+  return next;
 }
 
-function rowFromBatchMeta(
-  it: DownloadBatchStarted["items"][number],
-  index: number,
-): TaskRow {
-  const isDone = it.status === "done";
-  return {
-    index,
-    id: it.id,
-    title: it.title,
-    status: isDone ? "done" : "pending",
-    detail: isDone ? "已保存" : "",
-  };
+function patchJob(
+  prev: DownloadJob[],
+  id: string,
+  patch: Partial<DownloadJob>,
+): DownloadJob[] {
+  return prev.map((j) => (j.id === id ? { ...j, ...patch } : j));
+}
+
+function progressStatus(job: DownloadJob): "active" | "success" | "exception" | "normal" {
+  if (job.status === "downloading") return "active";
+  if (job.status === "done") return "success";
+  if (job.status === "failed") return "exception";
+  return "normal";
+}
+
+function formatProgress(job: DownloadJob, percent: number): string {
+  const parts = [`${percent}%`];
+  if (job.kind === "batch" && job.total > 1) {
+    parts.unshift(`${job.completed}/${job.total}`);
+  }
+  if (job.status === "downloading" && job.speed) parts.push(job.speed);
+  if (job.status === "downloading" && job.eta) parts.push(`剩余 ${job.eta}`);
+  return parts.join(" · ");
 }
 
 export function DownloadView({
@@ -88,39 +91,22 @@ export function DownloadView({
   defaultCategory,
   defaultQuality,
   onCategoriesChanged,
-  resumeSeed,
-  onResumeSeedConsumed,
-  resumeResetKey,
+  resumeTick,
 }: Props) {
+  const [jobs, setJobs] = useState<DownloadJob[]>([]);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const [url, setUrl] = useState("");
   const [category, setCategory] = useState(defaultCategory);
   const [newCategory, setNewCategory] = useState("");
   const [quality, setQuality] = useState(defaultQuality);
   const [audioOnly, setAudioOnly] = useState(false);
-  const [percent, setPercent] = useState<number | null>(null);
-  const [speed, setSpeed] = useState<string | null>(null);
-  const [eta, setEta] = useState<string | null>(null);
-  const [logs, setLogs] = useState<string[]>([]);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [donePath, setDonePath] = useState<string | null>(null);
-  const [tasks, setTasks] = useState<TaskRow[]>([]);
-  const [batchMode, setBatchMode] = useState(false);
-  const [batchResult, setBatchResult] = useState<DownloadBatchFinished | null>(
-    null
-  );
-  const logRef = useRef<HTMLPreElement>(null);
   const onCategoriesChangedRef = useRef(onCategoriesChanged);
   onCategoriesChangedRef.current = onCategoriesChanged;
-  const batchModeRef = useRef(false);
-  batchModeRef.current = batchMode;
 
-  const done = tasks.filter((t) => t.status === "done").length;
-  const failed = tasks.filter((t) => t.status === "failed").length;
-  const active = tasks.filter((t) => t.status === "downloading").length;
-  const summaryText = batchMode
-    ? `共 ${tasks.length} · 完成 ${done} · 失败 ${failed} · 进行中 ${active}`
-    : null;
+  const activeCount = jobs.filter(
+    (j) => j.status === "pending" || j.status === "downloading",
+  ).length;
 
   useEffect(() => {
     setCategory(defaultCategory);
@@ -131,166 +117,77 @@ export function DownloadView({
   }, [defaultQuality]);
 
   useEffect(() => {
-    if (!resumeSeed) return;
-    setError(null);
-    setDonePath(null);
-    setLogs([]);
-    setPercent(0);
-    setSpeed(null);
-    setEta(null);
-    setBatchResult(null);
-    setBusy(true);
-    setBatchMode(resumeSeed.kind === "batch");
-    setCategory(resumeSeed.category);
-    setQuality(resumeSeed.quality);
-    setAudioOnly(resumeSeed.audio_only);
-    if (resumeSeed.kind === "single") {
-      setUrl(resumeSeed.page_url);
-      setTasks([]);
-    } else {
-      setTasks(resumeSeed.items.map(rowFromQueueItem));
-    }
-    onResumeSeedConsumed();
-  }, [resumeSeed, onResumeSeedConsumed]);
-
-  useEffect(() => {
-    if (resumeResetKey === 0) return;
-    setBusy(false);
-  }, [resumeResetKey]);
-
-  useEffect(() => {
-    if (logRef.current) {
-      logRef.current.scrollTop = logRef.current.scrollHeight;
-    }
-  }, [logs]);
+    api
+      .listDownloadJobs()
+      .then(setJobs)
+      .catch((e) => message.error(String(e)));
+  }, [resumeTick]);
 
   useEffect(() => {
     let cancelled = false;
     const unsubs: Array<() => void> = [];
 
     (async () => {
-      const u1 = await listen<DownloadProgress>("download-progress", (e) => {
+      const uUpsert = await listen<DownloadJob>("download-job-upsert", (e) => {
         if (cancelled) return;
-        if (e.payload.percent != null) setPercent(e.payload.percent);
-        if (e.payload.speed != null) setSpeed(e.payload.speed);
-        if (e.payload.eta != null) setEta(e.payload.eta);
-        setLogs((prev) => {
-          const next = [...prev, e.payload.line];
-          return next.length > 200 ? next.slice(-200) : next;
-        });
-      });
-      const u2 = await listen<DownloadFinished>("download-finished", (e) => {
-        if (cancelled) return;
-        if (batchModeRef.current) return;
-        setBusy(false);
-        setDonePath(e.payload.path);
-        setPercent(100);
-        setSpeed(null);
-        setEta(null);
-        onCategoriesChangedRef.current();
-      });
-      const u3 = await listen<DownloadError>("download-error", (e) => {
-        if (cancelled) return;
-        if (batchModeRef.current) return;
-        setBusy(false);
-        setSpeed(null);
-        setEta(null);
-        if (e.payload.message.includes("已停止")) {
-          setLogs((prev) => [...prev, e.payload.message]);
-          setError(null);
-        } else {
-          setError(e.payload.message);
-        }
-      });
-      const uBatchStart = await listen<DownloadBatchStarted>(
-        "download-batch-started",
-        (e) => {
-          if (cancelled) return;
-          setBatchMode(true);
-          setBatchResult(null);
-          setTasks(
-            e.payload.items.map((it, index) => rowFromBatchMeta(it, index)),
-          );
-        }
-      );
-      const uItemStart = await listen<DownloadItemStarted>(
-        "download-item-started",
-        (e) => {
-          if (cancelled) return;
-          setTasks((prev) =>
-            prev.map((t) =>
-              t.index === e.payload.index
-                ? { ...t, status: "downloading", detail: "" }
-                : t
-            )
-          );
-        }
-      );
-      const uItemDone = await listen<DownloadItemFinished>(
-        "download-item-finished",
-        (e) => {
-          if (cancelled) return;
-          setTasks((prev) =>
-            prev.map((t) =>
-              t.index === e.payload.index
-                ? { ...t, status: "done", detail: e.payload.path }
-                : t
-            )
-          );
-        }
-      );
-      const uItemErr = await listen<DownloadItemError>(
-        "download-item-error",
-        (e) => {
-          if (cancelled) return;
-          setTasks((prev) =>
-            prev.map((t) =>
-              t.index === e.payload.index
-                ? { ...t, status: "failed", detail: e.payload.message }
-                : t
-            )
-          );
-        }
-      );
-      const uBatchEnd = await listen<DownloadBatchFinished>(
-        "download-batch-finished",
-        (e) => {
-          if (cancelled) return;
-          setBusy(false);
-          setSpeed(null);
-          setEta(null);
-          setTasks((prev) =>
-            prev.map((t) =>
-              t.status === "pending" || t.status === "downloading"
-                ? { ...t, status: "cancelled", detail: t.detail || "已取消" }
-                : t
-            )
-          );
-          setBatchResult(e.payload);
-          setPercent(100);
+        setJobs((prev) => upsertJob(prev, e.payload));
+        if (
+          e.payload.status === "done" ||
+          e.payload.status === "failed" ||
+          e.payload.status === "cancelled"
+        ) {
           onCategoriesChangedRef.current();
         }
+      });
+      const uProgress = await listen<DownloadProgress>(
+        "download-progress",
+        (e) => {
+          if (cancelled) return;
+          const { jobId, percent, line, speed, eta } = e.payload;
+          setJobs((prev) =>
+            patchJob(prev, jobId, {
+              detail: line,
+              ...(percent != null ? { percent } : {}),
+              ...(speed != null ? { speed } : {}),
+              ...(eta != null ? { eta } : {}),
+            }),
+          );
+        },
       );
-      if (cancelled) {
-        u1();
-        u2();
-        u3();
-        uBatchStart();
-        uItemStart();
-        uItemDone();
-        uItemErr();
-        uBatchEnd();
-      } else {
-        unsubs.push(
-          u1,
-          u2,
-          u3,
-          uBatchStart,
-          uItemStart,
-          uItemDone,
-          uItemErr,
-          uBatchEnd
+      const uDone = await listen<DownloadFinished>("download-finished", (e) => {
+        if (cancelled) return;
+        setJobs((prev) =>
+          patchJob(prev, e.payload.jobId, {
+            status: "done",
+            path: e.payload.path,
+            percent: 100,
+            speed: null,
+            eta: null,
+            detail: "已保存",
+          }),
         );
+        onCategoriesChangedRef.current();
+      });
+      const uErr = await listen<DownloadError>("download-error", (e) => {
+        if (cancelled) return;
+        const stopped = e.payload.message.includes("已停止");
+        setJobs((prev) =>
+          patchJob(prev, e.payload.jobId, {
+            status: stopped ? "cancelled" : "failed",
+            error: stopped ? null : e.payload.message,
+            speed: null,
+            eta: null,
+            detail: e.payload.message,
+          }),
+        );
+      });
+      if (cancelled) {
+        uUpsert();
+        uProgress();
+        uDone();
+        uErr();
+      } else {
+        unsubs.push(uUpsert, uProgress, uDone, uErr);
       }
     })();
 
@@ -312,240 +209,201 @@ export function DownloadView({
     return category || "未分类";
   }
 
-  async function onStart() {
-    setError(null);
-    setDonePath(null);
-    setLogs([]);
-    setPercent(0);
-    setSpeed(null);
-    setEta(null);
-    setTasks([]);
-    setBatchMode(false);
-    setBatchResult(null);
+  async function onCreate() {
+    if (!url.trim()) {
+      message.warning("请输入视频链接");
+      return;
+    }
+    setSubmitting(true);
     try {
       const cat = await ensureCategorySelected();
-      setBusy(true);
       await api.startDownload(url.trim(), cat, quality, audioOnly);
+      const listed = await api.listDownloadJobs();
+      setJobs(listed);
+      setModalOpen(false);
+      setUrl("");
+      setAudioOnly(false);
+      setQuality(defaultQuality);
     } catch (e) {
-      setBusy(false);
-      setError(String(e));
+      message.error(String(e));
+    } finally {
+      setSubmitting(false);
     }
   }
 
-  async function onStop() {
+  async function onStop(jobId: string) {
     try {
-      await api.stopDownload();
-      setLogs((prev) => [...prev, "正在停止…"]);
+      await api.stopDownload(jobId);
     } catch (e) {
-      setError(String(e));
+      message.error(String(e));
+    }
+  }
+
+  async function onStopAll() {
+    try {
+      await api.stopAllDownloads();
+    } catch (e) {
+      message.error(String(e));
     }
   }
 
   return (
-    <Card title="下载视频" bordered={false} className="page-card">
-      <Form layout="vertical" disabled={busy}>
-        <Form.Item label="视频链接" required>
-          <Input
-            size="large"
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-            placeholder="粘贴 YouTube / Bilibili / MissAV 链接（支持频道、播放列表与合集；MissAV 目前仅单视频）"
-            allowClear
-          />
-        </Form.Item>
-
-        <Row gutter={16}>
-          <Col xs={24} md={8}>
-            <Form.Item label="分类">
-              <Select
-                size="large"
-                value={category}
-                onChange={setCategory}
-                options={categories.map((c) => ({ value: c, label: c }))}
-              />
-            </Form.Item>
-          </Col>
-          <Col xs={24} md={8}>
-            <Form.Item label="或新建分类">
-              <Input
-                size="large"
-                value={newCategory}
-                onChange={(e) => setNewCategory(e.target.value)}
-                placeholder="新分类名"
-                allowClear
-              />
-            </Form.Item>
-          </Col>
-          <Col xs={24} md={8}>
-            <Form.Item label="清晰度">
-              <Select
-                size="large"
-                value={quality}
-                onChange={setQuality}
-                disabled={audioOnly}
-                options={[
-                  { value: "720", label: "720p" },
-                  { value: "1080", label: "1080p" },
-                  { value: "best", label: "最高" },
-                ]}
-              />
-            </Form.Item>
-          </Col>
-        </Row>
-
-        <Form.Item style={{ marginBottom: 16 }}>
-          <Checkbox
-            checked={audioOnly}
-            onChange={(e) => setAudioOnly(e.target.checked)}
+    <Card
+      title="下载任务"
+      bordered={false}
+      className="page-card"
+      extra={
+        <Space>
+          {activeCount > 0 && (
+            <Button danger icon={<StopOutlined />} onClick={onStopAll}>
+              全部停止
+            </Button>
+          )}
+          <Button
+            type="primary"
+            icon={<PlusOutlined />}
+            onClick={() => setModalOpen(true)}
           >
-            仅下载音频 (MP3)
-          </Checkbox>
-        </Form.Item>
-      </Form>
-
-      <Space wrap style={{ marginBottom: 16 }}>
-        <Button
-          type="primary"
-          size="large"
-          icon={<CloudDownloadOutlined />}
-          loading={busy}
-          disabled={!url.trim()}
-          onClick={onStart}
-        >
-          {busy ? "下载中…" : "开始下载"}
-        </Button>
-        <Button
-          danger
-          size="large"
-          icon={<StopOutlined />}
-          disabled={!busy}
-          onClick={onStop}
-        >
-          停止
-        </Button>
-      </Space>
-
-      {percent != null && (
-        <Progress
-          percent={Math.min(Number(percent.toFixed(1)), 100)}
-          status={busy ? "active" : percent >= 100 ? "success" : "normal"}
-          format={(p) => {
-            const parts = [`${p}%`];
-            if (busy && speed) parts.push(speed);
-            if (busy && eta) parts.push(`剩余 ${eta}`);
-            return parts.join(" · ");
-          }}
-          style={{ marginBottom: 16 }}
+            新建下载
+          </Button>
+        </Space>
+      }
+    >
+      {jobs.length === 0 ? (
+        <Empty
+          image={Empty.PRESENTED_IMAGE_SIMPLE}
+          description="还没有下载任务，点击右上角「新建下载」开始"
         />
+      ) : (
+        <div className="job-list">
+          {jobs.map((job) => {
+            const percent = Math.min(
+              Number((job.percent ?? 0).toFixed(1)),
+              100,
+            );
+            const meta = statusMeta[job.status];
+            return (
+              <div className="job-row" key={job.id}>
+                <div className="job-row-head">
+                  <Typography.Text strong ellipsis={{ tooltip: job.title }}>
+                    {job.title || job.url}
+                  </Typography.Text>
+                  <Space size={8} wrap>
+                    <Tag color={meta.color}>{meta.label}</Tag>
+                    <Tag>
+                      {job.audioOnly
+                        ? "音频 MP3"
+                        : qualityLabel[job.quality] || job.quality}
+                    </Tag>
+                    {job.category ? <Tag>{job.category}</Tag> : null}
+                    {(job.status === "pending" ||
+                      job.status === "downloading") && (
+                      <Button
+                        size="small"
+                        danger
+                        icon={<StopOutlined />}
+                        onClick={() => onStop(job.id)}
+                      >
+                        停止
+                      </Button>
+                    )}
+                  </Space>
+                </div>
+                <Typography.Text type="secondary" ellipsis={{ tooltip: job.url }}>
+                  {job.url}
+                </Typography.Text>
+                <Progress
+                  percent={percent}
+                  status={progressStatus(job)}
+                  format={() => formatProgress(job, percent)}
+                />
+                {job.detail ? (
+                  <Typography.Text
+                    type={job.status === "failed" ? "danger" : "secondary"}
+                    ellipsis={{ tooltip: job.detail }}
+                  >
+                    {job.path || job.detail}
+                  </Typography.Text>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
       )}
 
-      {batchMode && tasks.length > 0 && (
-        <>
-          <Typography.Paragraph type="secondary">
-            {summaryText}
-          </Typography.Paragraph>
-          <Table
-            size="small"
-            pagination={false}
-            rowKey="id"
-            dataSource={tasks}
-            scroll={{ y: 320 }}
-            style={{ marginBottom: 16 }}
-            columns={[
-              {
-                title: "#",
-                dataIndex: "index",
-                width: 56,
-                render: (i: number) => i + 1,
-              },
-              { title: "标题", dataIndex: "title", ellipsis: true },
-              {
-                title: "状态",
-                dataIndex: "status",
-                width: 88,
-                render: (s: TaskStatus) => statusLabel[s],
-              },
-              {
-                title: "详情",
-                dataIndex: "detail",
-                ellipsis: true,
-                render: (d: string, row: TaskRow) =>
-                  row.status === "failed" ? (
-                    <Typography.Text type="danger" ellipsis={{ tooltip: d }}>
-                      {d}
-                    </Typography.Text>
-                  ) : row.status === "done" ? (
-                    <Typography.Text
-                      type="secondary"
-                      ellipsis={{ tooltip: d }}
-                    >
-                      已保存
-                    </Typography.Text>
-                  ) : (
-                    d
-                  ),
-              },
-            ]}
-          />
-        </>
-      )}
-
-      {error && (
-        <Alert
-          type="error"
-          showIcon
-          closable
-          message={error}
-          onClose={() => setError(null)}
-          style={{ marginBottom: 16 }}
-        />
-      )}
-      {batchResult && (
-        <Alert
-          type={batchResult.failed === 0 ? "success" : "warning"}
-          showIcon
-          closable
-          message={
-            batchResult.failed === 0 ? "批量下载完成" : "批量下载结束"
-          }
-          description={`完成 ${batchResult.succeeded} · 失败 ${batchResult.failed} · 取消 ${batchResult.cancelled}`}
-          onClose={() => setBatchResult(null)}
-          style={{ marginBottom: 16 }}
-        />
-      )}
-      {donePath && !batchMode && (
-        <Alert
-          type="success"
-          showIcon
-          message="下载完成"
-          description={
-            <Typography.Text copyable ellipsis>
-              {donePath}
-            </Typography.Text>
-          }
-          style={{ marginBottom: 16 }}
-        />
-      )}
-
-      <Collapse
-        bordered={false}
-        size="small"
-        items={[
-          {
-            key: "logs",
-            label: (
-              <Typography.Text type="secondary">
-                日志{logs.length ? `（${logs.length}）` : ""}
-              </Typography.Text>
-            ),
-            children: (
-              <pre className="log" ref={logRef}>
-                {logs.length ? logs.join("\n") : "等待开始…"}
-              </pre>
-            ),
-          },
-        ]}
-      />
+      <Modal
+        title="新建下载"
+        open={modalOpen}
+        okText="开始下载"
+        cancelText="取消"
+        confirmLoading={submitting}
+        okButtonProps={{
+          icon: <CloudDownloadOutlined />,
+          disabled: !url.trim(),
+        }}
+        onOk={onCreate}
+        onCancel={() => {
+          if (!submitting) setModalOpen(false);
+        }}
+        destroyOnHidden
+      >
+        <Form layout="vertical" style={{ marginTop: 8 }}>
+          <Form.Item label="视频链接" required>
+            <Input
+              size="large"
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              placeholder="粘贴 YouTube / Bilibili / MissAV 链接（支持频道、播放列表与合集）"
+              allowClear
+              autoFocus
+            />
+          </Form.Item>
+          <Row gutter={16}>
+            <Col xs={24} md={12}>
+              <Form.Item label="分类">
+                <Select
+                  size="large"
+                  value={category}
+                  onChange={setCategory}
+                  options={categories.map((c) => ({ value: c, label: c }))}
+                />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={12}>
+              <Form.Item label="或新建分类">
+                <Input
+                  size="large"
+                  value={newCategory}
+                  onChange={(e) => setNewCategory(e.target.value)}
+                  placeholder="新分类名"
+                  allowClear
+                />
+              </Form.Item>
+            </Col>
+          </Row>
+          <Form.Item label="清晰度">
+            <Select
+              size="large"
+              value={quality}
+              onChange={setQuality}
+              disabled={audioOnly}
+              options={[
+                { value: "720", label: "720p" },
+                { value: "1080", label: "1080p" },
+                { value: "best", label: "最高" },
+              ]}
+            />
+          </Form.Item>
+          <Form.Item>
+            <Checkbox
+              checked={audioOnly}
+              onChange={(e) => setAudioOnly(e.target.checked)}
+            >
+              仅下载音频 (MP3)
+            </Checkbox>
+          </Form.Item>
+        </Form>
+      </Modal>
     </Card>
   );
 }

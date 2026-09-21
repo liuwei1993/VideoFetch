@@ -7,7 +7,7 @@ import {
   VideoCameraOutlined,
 } from "@ant-design/icons";
 import { api } from "./api";
-import type { DownloadQueue, Settings } from "./types";
+import type { DownloadJob, Settings } from "./types";
 import { DownloadView } from "./views/DownloadView";
 import { LibraryView } from "./views/LibraryView";
 import { SettingsView } from "./views/SettingsView";
@@ -16,14 +16,13 @@ const { Header, Content } = Layout;
 
 type Tab = "download" | "library" | "settings";
 
-function queueSummary(q: DownloadQueue): string {
-  const done = q.items.filter((i) => i.status === "done").length;
-  const todo = q.items.length - done;
-  if (q.kind === "batch") {
-    return `合集 · 共 ${q.items.length} · 已完成 ${done} · 待处理 ${todo} · 分类「${q.category}」`;
+function jobsSummary(jobs: DownloadJob[]): string {
+  if (jobs.length === 1) {
+    const j = jobs[0];
+    const kind = j.kind === "batch" ? "合集" : "单视频";
+    return `${kind} · ${j.title || j.url} · 分类「${j.category}」`;
   }
-  const title = q.items[0]?.title || q.page_url;
-  return `单视频 · ${title} · 分类「${q.category}」`;
+  return `${jobs.length} 个未完成任务`;
 }
 
 function App() {
@@ -31,10 +30,9 @@ function App() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [categories, setCategories] = useState<string[]>([]);
   const [bootError, setBootError] = useState<string | null>(null);
-  const [pendingQueue, setPendingQueue] = useState<DownloadQueue | null>(null);
-  const [resumeSeed, setResumeSeed] = useState<DownloadQueue | null>(null);
+  const [pendingJobs, setPendingJobs] = useState<DownloadJob[]>([]);
   const [resuming, setResuming] = useState(false);
-  const [resumeResetKey, setResumeResetKey] = useState(0);
+  const [resumeTick, setResumeTick] = useState(0);
   const { token } = theme.useToken();
 
   const refresh = useCallback(async () => {
@@ -46,15 +44,13 @@ function App() {
     setCategories(cats);
   }, []);
 
-  const onResumeSeedConsumed = useCallback(() => setResumeSeed(null), []);
-
   useEffect(() => {
     (async () => {
       try {
         await api.ensureLibrary();
         await refresh();
-        const q = await api.getDownloadQueue();
-        if (q) setPendingQueue(q);
+        const jobs = await api.getDownloadQueue();
+        if (jobs.length) setPendingJobs(jobs);
       } catch (e) {
         setBootError(String(e));
       }
@@ -62,17 +58,14 @@ function App() {
   }, [refresh]);
 
   async function onResumeQueue() {
-    if (!pendingQueue) return;
+    if (!pendingJobs.length) return;
     setResuming(true);
     try {
       setTab("download");
-      setResumeSeed(pendingQueue);
-      await new Promise((r) => setTimeout(r, 50));
       await api.resumeDownloadQueue();
-      setPendingQueue(null);
+      setPendingJobs([]);
+      setResumeTick((n) => n + 1);
     } catch (e) {
-      setResumeSeed(null);
-      setResumeResetKey((k) => k + 1);
       message.error(String(e));
     } finally {
       setResuming(false);
@@ -83,7 +76,8 @@ function App() {
     if (resuming) return;
     try {
       await api.discardDownloadQueue();
-      setPendingQueue(null);
+      setPendingJobs([]);
+      setResumeTick((n) => n + 1);
     } catch (e) {
       setBootError(String(e));
     }
@@ -140,9 +134,7 @@ function App() {
             defaultCategory={settings.last_category || "未分类"}
             defaultQuality={settings.default_quality || "720"}
             onCategoriesChanged={refresh}
-            resumeSeed={resumeSeed}
-            onResumeSeedConsumed={onResumeSeedConsumed}
-            resumeResetKey={resumeResetKey}
+            resumeTick={resumeTick}
           />
         )}
         {tab === "library" && (
@@ -153,7 +145,7 @@ function App() {
 
       <Modal
         title="未完成的下载"
-        open={!!pendingQueue}
+        open={pendingJobs.length > 0}
         okText="继续"
         cancelText="丢弃"
         onOk={onResumeQueue}
@@ -163,7 +155,7 @@ function App() {
         closable={false}
         maskClosable={false}
       >
-        {pendingQueue && <p>{queueSummary(pendingQueue)}</p>}
+        <p>{jobsSummary(pendingJobs)}</p>
       </Modal>
     </Layout>
   );

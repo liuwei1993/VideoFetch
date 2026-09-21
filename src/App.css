@@ -77,6 +77,34 @@ body {
   word-break: break-word;
 }
 
+.job-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.job-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px 16px;
+  border: 1px solid rgba(15, 118, 110, 0.12);
+  border-radius: 12px;
+  background: #fffcf7;
+}
+
+.job-row-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.job-row-head .ant-typography {
+  min-width: 0;
+  flex: 1;
+}
+
 .library-layout {
   background: transparent;
   min-height: 520px;

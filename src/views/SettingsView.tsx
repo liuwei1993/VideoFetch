@@ -103,7 +103,7 @@ export function SettingsView({ onSaved }: Props) {
 
         <Form.Item
           label="同时下载数"
-          extra="合集批量时最多并行几个任务（1–10，默认 5）"
+          extra="所有任务合计最多并行几个 yt-dlp 进程（1–10，默认 5）"
         >
           <InputNumber
             min={1}

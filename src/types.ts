@@ -14,7 +14,36 @@ export type VideoItem = {
   size: number;
 };
 
+export type JobStatus =
+  | "pending"
+  | "downloading"
+  | "done"
+  | "failed"
+  | "cancelled";
+
+export type DownloadJob = {
+  id: string;
+  url: string;
+  category: string;
+  quality: string;
+  audioOnly: boolean;
+  kind: QueueKind;
+  status: JobStatus;
+  title: string;
+  percent: number | null;
+  speed: string | null;
+  eta: string | null;
+  error: string | null;
+  path: string | null;
+  detail: string;
+  completed: number;
+  total: number;
+  items: QueueItem[];
+  updatedAt: string;
+};
+
 export type DownloadProgress = {
+  jobId: string;
   percent: number | null;
   line: string;
   speed: string | null;
@@ -22,10 +51,12 @@ export type DownloadProgress = {
 };
 
 export type DownloadFinished = {
+  jobId: string;
   path: string;
 };
 
 export type DownloadError = {
+  jobId: string;
   message: string;
 };
 
@@ -40,27 +71,31 @@ export type QueueItem = {
   status: ItemStatus;
 };
 
-export type DownloadQueue = {
-  version: number;
-  kind: QueueKind;
-  page_url: string;
-  category: string;
-  quality: string;
-  audio_only: boolean;
-  updated_at: string;
-  items: QueueItem[];
-};
-
 export type BatchItemMeta = {
   id: string;
   title: string;
   status?: string | null;
 };
-export type DownloadBatchStarted = { total: number; items: BatchItemMeta[] };
-export type DownloadItemStarted = { index: number; id: string };
-export type DownloadItemFinished = { index: number; id: string; path: string };
-export type DownloadItemError = { index: number; id: string; message: string };
+export type DownloadBatchStarted = {
+  jobId: string;
+  total: number;
+  items: BatchItemMeta[];
+};
+export type DownloadItemStarted = { jobId: string; index: number; id: string };
+export type DownloadItemFinished = {
+  jobId: string;
+  index: number;
+  id: string;
+  path: string;
+};
+export type DownloadItemError = {
+  jobId: string;
+  index: number;
+  id: string;
+  message: string;
+};
 export type DownloadBatchFinished = {
+  jobId: string;
   succeeded: number;
   failed: number;
   cancelled: number;

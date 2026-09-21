@@ -50,7 +50,7 @@ pub fn parse_flat_playlist_output(stdout: &str) -> Vec<PlaylistItem> {
 }
 
 /// Run yt-dlp --flat-playlist and return items. Applies Bilibili proxy from settings.
-pub fn expand_playlist(url: &str, settings: &Settings) -> Result<Vec<PlaylistItem>, String> {
+pub fn expand_playlist(url: &str, settings: &Settings, job_id: &str) -> Result<Vec<PlaylistItem>, String> {
     let (bin, prefix) = download::resolve_ytdlp()?;
     let mut cmd = Command::new(&bin);
     for p in &prefix {
@@ -62,6 +62,7 @@ pub fn expand_playlist(url: &str, settings: &Settings) -> Result<Vec<PlaylistIte
         .arg("--print")
         .arg("%(id)s\t%(title)s");
     download::apply_ytdlp_retry_args(&mut cmd);
+    download::apply_bundled_ffmpeg(&mut cmd);
 
     let site = site::detect_site(url);
     if let Some(proxy) = site::proxy_for(site, settings) {
@@ -80,7 +81,7 @@ pub fn expand_playlist(url: &str, settings: &Settings) -> Result<Vec<PlaylistIte
         .spawn()
         .map_err(|e| format!("展开合集失败（启动 yt-dlp）: {e}"))?;
     let child_pid = child.id();
-    download::add_child_pid(child_pid);
+    download::add_child_pid(job_id, child_pid);
 
     let stdout_pipe = child.stdout.take();
     let stderr_pipe = child.stderr.take();
@@ -102,12 +103,12 @@ pub fn expand_playlist(url: &str, settings: &Settings) -> Result<Vec<PlaylistIte
     let status = child
         .wait()
         .map_err(|e| format!("展开合集失败（等待 yt-dlp）: {e}"))?;
-    download::remove_child_pid(child_pid);
+    download::remove_child_pid(job_id, child_pid);
 
     let stdout = stdout_handle.join().unwrap_or_default();
     let stderr = stderr_handle.join().unwrap_or_default();
 
-    if download::is_download_cancelled() {
+    if download::is_job_cancelled(job_id) {
         return Err("已停止下载".into());
     }
 
