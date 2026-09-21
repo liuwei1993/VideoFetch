@@ -1,7 +1,7 @@
 [package]
 name = "tauri-app"
 version = "0.1.0"
-description = "VideoFetch — YouTube / Bilibili video downloader with folder categories"
+description = "VideoFetch — YouTube / Bilibili / MissAV video downloader with folder categories"
 authors = ["you"]
 edition = "2021"
 

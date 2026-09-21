@@ -11,7 +11,7 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 #[derive(Clone, Serialize)]
 pub struct DownloadProgress {
@@ -95,8 +95,7 @@ pub struct StartDownloadArgs {
 
 static DOWNLOAD_RUNNING: AtomicBool = AtomicBool::new(false);
 static DOWNLOAD_CANCELLED: AtomicBool = AtomicBool::new(false);
-static CHILD_PIDS: LazyLock<Mutex<HashSet<u32>>> =
-    LazyLock::new(|| Mutex::new(HashSet::new()));
+static CHILD_PIDS: LazyLock<Mutex<HashSet<u32>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
 static QUEUE_PERSIST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 fn clear_child_pids() {
@@ -228,6 +227,30 @@ pub fn resolve_ytdlp() -> Result<(String, Vec<String>), String> {
     Err("未找到 yt-dlp。请安装 uv（推荐）或把 yt-dlp 加入 PATH，也可设置 VIDEOFETCH_YTDLP。".into())
 }
 
+fn ytdlp_plugin_dirs(app: &AppHandle) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Ok(res) = app.path().resource_dir() {
+        let p = res.join("yt-dlp-plugins");
+        if p.is_dir() {
+            dirs.push(p);
+        }
+    }
+    let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("yt-dlp-plugins");
+    if dev.is_dir() && !dirs.iter().any(|d| d == &dev) {
+        dirs.push(dev);
+    }
+    dirs
+}
+
+#[cfg(test)]
+fn missav_plugin_file() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("yt-dlp-plugins/missav/yt_dlp_plugins/extractor/missav.py")
+}
+
+const DOWNLOAD_ATTEMPTS: u32 = 3;
+const YOUTUBE_MAX_CONCURRENT: usize = 2;
+
 fn command_exists(name: &str) -> bool {
     Command::new("sh")
         .arg("-c")
@@ -241,6 +264,50 @@ fn command_exists(name: &str) -> bool {
 
 fn node_available() -> bool {
     command_exists("node")
+}
+
+pub fn apply_ytdlp_retry_args(cmd: &mut Command) {
+    cmd.arg("--retries")
+        .arg("15")
+        .arg("--fragment-retries")
+        .arg("15")
+        .arg("--extractor-retries")
+        .arg("5")
+        .arg("--retry-sleep")
+        .arg("2")
+        .arg("--socket-timeout")
+        .arg("30");
+}
+
+fn youtube_batch_concurrency(configured: u32) -> usize {
+    (settings::clamp_max_concurrent(configured) as usize)
+        .min(YOUTUBE_MAX_CONCURRENT)
+        .max(1)
+}
+
+fn is_ytdlp_diag_line(line: &str) -> bool {
+    let t = line.trim();
+    t.contains("ERROR:")
+        || t.contains("HTTP Error")
+        || t.contains("Unable to download")
+        || t.contains("Connection refused")
+        || t.contains("Errno 111")
+        || t.contains("Giving up")
+}
+
+fn format_ytdlp_failure(code: Option<i32>, notes: &[String]) -> String {
+    let hint = notes
+        .iter()
+        .rev()
+        .find(|l| l.contains("ERROR:"))
+        .or_else(|| notes.last())
+        .cloned()
+        .unwrap_or_default();
+    if hint.is_empty() {
+        format!("yt-dlp 退出码: {code:?}")
+    } else {
+        format!("yt-dlp 退出码: {code:?} · {hint}")
+    }
 }
 
 fn parse_percent(line: &str) -> Option<f64> {
@@ -351,7 +418,12 @@ fn emit_line(app: &AppHandle, line: &str) {
 }
 
 /// Read pipe bytes and split on both `\n` and `\r` (yt-dlp progress often uses `\r`).
-fn pump_pipe(app: AppHandle, mut pipe: impl Read, last_path: Arc<std::sync::Mutex<Option<String>>>) {
+fn pump_pipe(
+    app: AppHandle,
+    mut pipe: impl Read,
+    last_path: Arc<std::sync::Mutex<Option<String>>>,
+    diag: Arc<std::sync::Mutex<Vec<String>>>,
+) {
     let mut buf = [0u8; 4096];
     let mut acc = Vec::<u8>::new();
     loop {
@@ -365,6 +437,14 @@ fn pump_pipe(app: AppHandle, mut pipe: impl Read, last_path: Arc<std::sync::Mute
                             if !line.starts_with('[') && Path::new(&line).is_absolute() {
                                 if let Ok(mut g) = last_path.lock() {
                                     *g = Some(line.clone());
+                                }
+                            }
+                            if is_ytdlp_diag_line(&line) {
+                                if let Ok(mut g) = diag.lock() {
+                                    g.push(line.trim().to_string());
+                                    while g.len() > 8 {
+                                        g.remove(0);
+                                    }
                                 }
                             }
                             emit_line(&app, &line);
@@ -384,6 +464,11 @@ fn pump_pipe(app: AppHandle, mut pipe: impl Read, last_path: Arc<std::sync::Mute
         if !line.starts_with('[') && Path::new(&line).is_absolute() {
             if let Ok(mut g) = last_path.lock() {
                 *g = Some(line.clone());
+            }
+        }
+        if is_ytdlp_diag_line(&line) {
+            if let Ok(mut g) = diag.lock() {
+                g.push(line.trim().to_string());
             }
         }
         emit_line(&app, &line);
@@ -461,17 +546,10 @@ pub fn start_download(app: AppHandle, args: StartDownloadArgs) -> Result<(), Str
 
     let app_for_job = app.clone();
     std::thread::spawn(move || {
-        let is_batch = site::is_bilibili_collection_url(&url);
+        let is_batch = site::is_batch_url(&url);
         let session = (|| -> Result<SessionOutcome, String> {
             if is_batch {
-                run_batch_download(
-                    &app_for_job,
-                    &url,
-                    &category,
-                    &quality,
-                    audio_only,
-                    None,
-                )?;
+                run_batch_download(&app_for_job, &url, &category, &quality, audio_only, None)?;
                 Ok(SessionOutcome::Batch)
             } else {
                 let item_id = queue_item_id_from_url(&url);
@@ -528,8 +606,7 @@ pub fn start_download(app: AppHandle, args: StartDownloadArgs) -> Result<(), Str
 }
 
 pub fn resume_download_queue(app: AppHandle) -> Result<(), String> {
-    let q = queue::load_resumable_queue(&app)?
-        .ok_or_else(|| "没有可恢复的下载".to_string())?;
+    let q = queue::load_resumable_queue(&app)?.ok_or_else(|| "没有可恢复的下载".to_string())?;
     if DOWNLOAD_RUNNING.swap(true, Ordering::SeqCst) {
         return Err("已有下载任务在进行".into());
     }
@@ -604,6 +681,53 @@ fn run_download(
     update_last_category: bool,
     allow_size_fallback: bool,
 ) -> Result<PathBuf, String> {
+    let mut last_err = None;
+    for attempt in 1..=DOWNLOAD_ATTEMPTS {
+        if DOWNLOAD_CANCELLED.load(Ordering::SeqCst) {
+            return Err("已停止下载".into());
+        }
+        match run_download_once(
+            app,
+            url,
+            category,
+            quality,
+            audio_only,
+            false,
+            allow_size_fallback,
+        ) {
+            Ok(path) => {
+                if update_last_category {
+                    let mut settings = settings::load_settings(app)?;
+                    settings.last_category = category.to_string();
+                    settings::save_settings(app, &settings)?;
+                }
+                return Ok(path);
+            }
+            Err(message) if message.contains("已停止") => return Err(message),
+            Err(message) => {
+                last_err = Some(message);
+                if attempt < DOWNLOAD_ATTEMPTS {
+                    emit_line(
+                        app,
+                        &format!("下载失败，正在重试（{attempt}/{DOWNLOAD_ATTEMPTS}）…"),
+                    );
+                    std::thread::sleep(Duration::from_secs(2 * u64::from(attempt)));
+                }
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| "下载失败".into()))
+}
+
+fn run_download_once(
+    app: &AppHandle,
+    url: &str,
+    category: &str,
+    quality: &str,
+    audio_only: bool,
+    update_last_category: bool,
+    allow_size_fallback: bool,
+) -> Result<PathBuf, String> {
     let mut settings = settings::load_settings(app)?;
     let root = settings::library_root_path(&settings);
     library::ensure_library_root(&root)?;
@@ -623,6 +747,12 @@ fn run_download(
 
     let (bin, prefix) = resolve_ytdlp()?;
     let site = site::detect_site(url);
+    if site == Site::Missav && !site::is_missav_single_video_url(url) {
+        return Err(
+            "MissAV 目前仅支持单视频链接，例如 https://missav.ws/cn/番号（首页和列表稍后支持）"
+                .into(),
+        );
+    }
     if site == Site::Unknown {
         emit_line(app, "未识别站点，仍尝试用 yt-dlp 下载…");
     }
@@ -637,6 +767,7 @@ fn run_download(
         .arg("--no-playlist")
         .arg("--continue")
         .arg("--progress");
+    apply_ytdlp_retry_args(&mut cmd);
     if audio_only {
         cmd.arg("-x")
             .arg("--audio-format")
@@ -664,6 +795,16 @@ fn run_download(
         cmd.arg("--proxy").arg(proxy);
     }
 
+    if site == Site::Missav {
+        let plugin_dirs = ytdlp_plugin_dirs(app);
+        if plugin_dirs.is_empty() {
+            return Err("未找到 MissAV yt-dlp 插件目录".into());
+        }
+        for dir in &plugin_dirs {
+            cmd.arg("--plugin-dirs").arg(dir);
+        }
+    }
+
     cmd.arg(url);
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     #[cfg(unix)]
@@ -676,6 +817,7 @@ fn run_download(
     let site_label = match site {
         Site::Youtube => "YouTube",
         Site::Bilibili => "Bilibili",
+        Site::Missav => "MissAV",
         Site::Unknown => "未知站点",
     };
     let proxy_label = proxy
@@ -706,21 +848,24 @@ fn run_download(
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let last_path = Arc::new(std::sync::Mutex::new(None));
+    let diag = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
     let stop_watch = Arc::new(AtomicBool::new(false));
 
     let app_out = app.clone();
     let path_out = last_path.clone();
+    let diag_out = diag.clone();
     let out_handle = std::thread::spawn(move || {
         if let Some(out) = stdout {
-            pump_pipe(app_out, out, path_out);
+            pump_pipe(app_out, out, path_out, diag_out);
         }
     });
 
     let app_err = app.clone();
     let path_err = last_path.clone();
+    let diag_err = diag.clone();
     let err_handle = std::thread::spawn(move || {
         if let Some(err) = stderr {
-            pump_pipe(app_err, err, path_err);
+            pump_pipe(app_err, err, path_err, diag_err);
         }
     });
 
@@ -752,13 +897,12 @@ fn run_download(
     }
 
     if !status.success() {
+        let notes = diag.lock().ok().map(|g| g.clone()).unwrap_or_default();
+        let detail = format_ytdlp_failure(status.code(), &notes);
         if audio_only {
-            return Err(format!(
-                "yt-dlp 退出码: {:?}（音频转码失败时请确认已安装 ffmpeg）",
-                status.code()
-            ));
+            return Err(format!("{detail}（音频转码失败时请确认已安装 ffmpeg）"));
         }
-        return Err(format!("yt-dlp 退出码: {:?}", status.code()));
+        return Err(detail);
     }
 
     if update_last_category {
@@ -843,7 +987,7 @@ fn run_batch_download(
                 index,
                 id: i.id.clone(),
                 title: i.title.clone(),
-                url: crate::playlist::bilibili_video_url(&i.id),
+                url: crate::playlist::item_video_url(page_url, &i.id),
                 status: queue::ItemStatus::Pending,
             })
             .collect();
@@ -872,7 +1016,19 @@ fn run_batch_download(
         },
     );
 
-    let concurrency = settings::clamp_max_concurrent(settings.max_concurrent_downloads) as usize;
+    let configured = settings::clamp_max_concurrent(settings.max_concurrent_downloads) as usize;
+    let concurrency = if site::detect_site(page_url) == Site::Youtube {
+        let n = youtube_batch_concurrency(settings.max_concurrent_downloads);
+        if n < configured {
+            emit_line(
+                app,
+                &format!("YouTube 合集并发限制为 {n}（避免代理/限流导致失败），失败项会自动重试"),
+            );
+        }
+        n
+    } else {
+        configured
+    };
     let next = Arc::new(AtomicUsize::new(0));
     let succeeded = Arc::new(AtomicUsize::new(0));
     let failed = Arc::new(AtomicUsize::new(0));
@@ -891,65 +1047,56 @@ fn run_batch_download(
         let failed = failed.clone();
         let category = category.to_string();
         let quality = quality.to_string();
-        handles.push(std::thread::spawn(move || {
-            loop {
-                if DOWNLOAD_CANCELLED.load(Ordering::SeqCst) {
-                    break;
+        let page_url = page_url.to_string();
+        handles.push(std::thread::spawn(move || loop {
+            if DOWNLOAD_CANCELLED.load(Ordering::SeqCst) {
+                break;
+            }
+            let pos = next.fetch_add(1, Ordering::SeqCst);
+            if pos >= todo.len() {
+                break;
+            }
+            let index = todo[pos];
+            if index >= items.len() {
+                continue;
+            }
+            let item = &items[index];
+            persist_item_status(&app, index, queue::ItemStatus::Downloading);
+            let _ = app.emit(
+                "download-item-started",
+                DownloadItemStarted {
+                    index,
+                    id: item.id.clone(),
+                },
+            );
+            let url = crate::playlist::item_video_url(&page_url, &item.id);
+            match run_download(&app, &url, &category, &quality, audio_only, false, false) {
+                Ok(path) => {
+                    succeeded.fetch_add(1, Ordering::SeqCst);
+                    persist_item_status(&app, index, queue::ItemStatus::Done);
+                    let _ = app.emit(
+                        "download-item-finished",
+                        DownloadItemFinished {
+                            index,
+                            id: item.id.clone(),
+                            path: path.to_string_lossy().into_owned(),
+                        },
+                    );
                 }
-                let pos = next.fetch_add(1, Ordering::SeqCst);
-                if pos >= todo.len() {
-                    break;
-                }
-                let index = todo[pos];
-                if index >= items.len() {
-                    continue;
-                }
-                let item = &items[index];
-                persist_item_status(&app, index, queue::ItemStatus::Downloading);
-                let _ = app.emit(
-                    "download-item-started",
-                    DownloadItemStarted {
-                        index,
-                        id: item.id.clone(),
-                    },
-                );
-                let url = crate::playlist::bilibili_video_url(&item.id);
-                match run_download(
-                    &app,
-                    &url,
-                    &category,
-                    &quality,
-                    audio_only,
-                    false,
-                    false,
-                ) {
-                    Ok(path) => {
-                        succeeded.fetch_add(1, Ordering::SeqCst);
-                        persist_item_status(&app, index, queue::ItemStatus::Done);
-                        let _ = app.emit(
-                            "download-item-finished",
-                            DownloadItemFinished {
-                                index,
-                                id: item.id.clone(),
-                                path: path.to_string_lossy().into_owned(),
-                            },
-                        );
+                Err(message) => {
+                    if message.contains("已停止") {
+                        continue;
                     }
-                    Err(message) => {
-                        if message.contains("已停止") {
-                            continue;
-                        }
-                        failed.fetch_add(1, Ordering::SeqCst);
-                        persist_item_status(&app, index, queue::ItemStatus::Failed);
-                        let _ = app.emit(
-                            "download-item-error",
-                            DownloadItemError {
-                                index,
-                                id: item.id.clone(),
-                                message,
-                            },
-                        );
-                    }
+                    failed.fetch_add(1, Ordering::SeqCst);
+                    persist_item_status(&app, index, queue::ItemStatus::Failed);
+                    let _ = app.emit(
+                        "download-item-error",
+                        DownloadItemError {
+                            index,
+                            id: item.id.clone(),
+                            message,
+                        },
+                    );
                 }
             }
         }));
@@ -1046,9 +1193,7 @@ fn validate_playable_output(path: &Path, audio_only: bool) -> Result<(), String>
         .output();
     if let Ok(a) = audio {
         if a.status.success() && String::from_utf8_lossy(&a.stdout).trim().is_empty() {
-            return Err(
-                "成品没有音轨（常见于合并失败）。请确认 ffmpeg 可用后重新下载。".into(),
-            );
+            return Err("成品没有音轨（常见于合并失败）。请确认 ffmpeg 可用后重新下载。".into());
         }
     }
     Ok(())
@@ -1122,5 +1267,40 @@ mod tests {
             queue_item_id_from_url("https://example.com/watch/abc123#t=10"),
             "abc123"
         );
+    }
+
+    #[test]
+    fn missav_plugin_file_exists() {
+        assert!(
+            missav_plugin_file().is_file(),
+            "expected MissAV yt-dlp plugin at {:?}",
+            missav_plugin_file()
+        );
+    }
+
+    #[test]
+    fn youtube_batch_concurrency_caps_at_two() {
+        assert_eq!(youtube_batch_concurrency(1), 1);
+        assert_eq!(youtube_batch_concurrency(2), 2);
+        assert_eq!(youtube_batch_concurrency(5), 2);
+        assert_eq!(youtube_batch_concurrency(10), 2);
+    }
+
+    #[test]
+    fn ytdlp_failure_prefers_error_line() {
+        assert!(is_ytdlp_diag_line(
+            "ERROR: unable to download video data: HTTP Error 403: Forbidden"
+        ));
+        assert!(is_ytdlp_diag_line(
+            "WARNING: [youtube:tab] [Errno 111] Connection refused"
+        ));
+        assert!(!is_ytdlp_diag_line("[download]  45.2% of 10.00MiB"));
+        let notes = vec![
+            "WARNING: something".into(),
+            "ERROR: unable to download video data: HTTP Error 403: Forbidden".into(),
+        ];
+        let msg = format_ytdlp_failure(Some(1), &notes);
+        assert!(msg.contains("403"));
+        assert!(msg.contains("退出码"));
     }
 }

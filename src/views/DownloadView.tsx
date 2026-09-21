@@ -349,7 +349,7 @@ export function DownloadView({
             size="large"
             value={url}
             onChange={(e) => setUrl(e.target.value)}
-            placeholder="粘贴 YouTube / Bilibili 链接（支持合集）"
+            placeholder="粘贴 YouTube / Bilibili / MissAV 链接（支持频道、播放列表与合集；MissAV 目前仅单视频）"
             allowClear
           />
         </Form.Item>

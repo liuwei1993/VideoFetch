@@ -15,6 +15,13 @@ pub fn bilibili_video_url(id: &str) -> String {
     format!("https://www.bilibili.com/video/{id}")
 }
 
+pub fn item_video_url(page_url: &str, id: &str) -> String {
+    match site::detect_site(page_url) {
+        site::Site::Youtube => format!("https://www.youtube.com/watch?v={id}"),
+        _ => bilibili_video_url(id),
+    }
+}
+
 pub fn parse_flat_playlist_output(stdout: &str) -> Vec<PlaylistItem> {
     let mut items = Vec::new();
     for line in stdout.lines() {
@@ -54,6 +61,7 @@ pub fn expand_playlist(url: &str, settings: &Settings) -> Result<Vec<PlaylistIte
     cmd.arg("--flat-playlist")
         .arg("--print")
         .arg("%(id)s\t%(title)s");
+    download::apply_ytdlp_retry_args(&mut cmd);
 
     let site = site::detect_site(url);
     if let Some(proxy) = site::proxy_for(site, settings) {
@@ -137,6 +145,17 @@ mod tests {
         assert_eq!(
             bilibili_video_url("BV1xx"),
             "https://www.bilibili.com/video/BV1xx"
+        );
+        assert_eq!(
+            item_video_url("https://space.bilibili.com/1/lists/2", "BV1xx"),
+            "https://www.bilibili.com/video/BV1xx"
+        );
+        assert_eq!(
+            item_video_url(
+                "https://www.youtube.com/@bruce_lu_1993/videos",
+                "s_1DlVFOPIA"
+            ),
+            "https://www.youtube.com/watch?v=s_1DlVFOPIA"
         );
     }
 }

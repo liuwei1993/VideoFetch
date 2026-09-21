@@ -1,7 +1,7 @@
 mod download;
-mod queue;
 mod library;
 mod playlist;
+mod queue;
 mod settings;
 mod site;
 
@@ -79,7 +79,9 @@ fn move_video(
 
 #[tauri::command]
 fn delete_video(app: tauri::AppHandle, category: String, filename: String) -> Result<(), String> {
-    with_root(&app, |root, _| library::delete_video(root, &category, &filename))
+    with_root(&app, |root, _| {
+        library::delete_video(root, &category, &filename)
+    })
 }
 
 #[tauri::command]
