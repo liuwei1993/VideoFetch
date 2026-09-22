@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "bash scripts/fetch-linux-sidecars.sh && npm run build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -21,14 +21,16 @@
       "csp": null
     }
   },
-    "bundle": {
+  "bundle": {
     "active": true,
     "targets": "all",
-    "resources": [
-      "yt-dlp-plugins/**/*",
+    "externalBin": [
       "binaries/yt-dlp",
       "binaries/ffmpeg",
       "binaries/ffprobe"
+    ],
+    "resources": [
+      "yt-dlp-plugins/**/*"
     ],
     "icon": [
       "icons/32x32.png",

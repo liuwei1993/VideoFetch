@@ -6,8 +6,8 @@ Tauri 桌面客户端：下载 YouTube / Bilibili / MissAV 视频，并用 `~/vi
 
 - Node.js 18+
 - Rust（stable）
-- [ffmpeg](https://ffmpeg.org/)（合并音视频）
-- [uv](https://github.com/astral-sh/uv)（推荐，用于拉取较新的 `yt-dlp`）或系统 `yt-dlp`
+- [ffmpeg](https://ffmpeg.org/) 与 [yt-dlp](https://github.com/yt-dlp/yt-dlp)：开发时可用系统安装，或运行 `bash scripts/fetch-linux-sidecars.sh` 下载内置副本。**AppImage 已内置** yt-dlp、ffmpeg、ffprobe（x86_64 / aarch64 glibc；Alpine 等 musl 系统不支持）。
+- [uv](https://github.com/astral-sh/uv) 仅作开发机回退（没有内置二进制时），不会打进 AppImage。
 - 访问 YouTube / MissAV 时需要本机 HTTP 代理（默认 `http://127.0.0.1:57890`）
 - YouTube 抽取建议安装 Node（`--js-runtimes node`）
 
