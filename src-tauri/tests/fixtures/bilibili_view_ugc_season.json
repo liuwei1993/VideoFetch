@@ -1,0 +1,34 @@
+{
+  "code": 0,
+  "data": {
+    "bvid": "BV1NCgVzoEG9",
+    "title": "【闪客】一小时从函数到 Transformer",
+    "ugc_season": {
+      "id": 4808015,
+      "title": "AI入门",
+      "sections": [
+        {
+          "title": "正片",
+          "episodes": [
+            {
+              "bvid": "BV1NCgVzoEG9",
+              "title": "【完整合集】一小时从函数到Transformer！",
+              "pages": [
+                { "page": 1, "part": "01 从函数到神经网络" },
+                { "page": 2, "part": "02 计算神经网络的参数" }
+              ]
+            },
+            {
+              "bvid": "BV15z4C6SEHT",
+              "title": "【闪客】一小时从 Transformer 到大模型！",
+              "pages": [
+                { "page": 1, "part": "00 没什么用的前言" },
+                { "page": 2, "part": "01 定义问题" }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

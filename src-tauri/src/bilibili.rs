@@ -11,6 +11,131 @@ pub fn extract_bvid(url: &str) -> Option<String> {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeasonPart {
+    pub id: String,
+    pub title: String,
+    pub url: String,
+    pub subdir: String,
+    pub output_stem: String,
+    pub season_title: String,
+}
+
+pub fn parse_ugc_season_items(json: &str) -> Result<Vec<SeasonPart>, String> {
+    let root: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| format!("invalid JSON: {e}"))?;
+
+    if let Some(code) = root.get("code").and_then(|c| c.as_i64()) {
+        if code != 0 {
+            return Err(format!("bilibili API code {code}"));
+        }
+    }
+
+    let ugc_season = match root.get("data").and_then(|d| d.get("ugc_season")) {
+        Some(s) if !s.is_null() => s,
+        _ => return Ok(vec![]),
+    };
+
+    let season_title = ugc_season
+        .get("title")
+        .and_then(|t| t.as_str())
+        .unwrap_or("untitled")
+        .to_string();
+    let season_dir = sanitize_path_component(&season_title);
+
+    let sections = ugc_season
+        .get("sections")
+        .and_then(|s| s.as_array())
+        .ok_or("ugc_season.sections missing or not an array")?;
+
+    let mut items = Vec::new();
+
+    for section in sections {
+        let episodes = section.get("episodes").and_then(|e| e.as_array());
+        let episodes = episodes.map(|s| s.as_slice()).unwrap_or(&[]);
+
+        for episode in episodes {
+            let bvid = episode
+                .get("bvid")
+                .and_then(|b| b.as_str())
+                .ok_or("episode missing bvid")?;
+            let episode_title = episode
+                .get("title")
+                .and_then(|t| t.as_str())
+                .unwrap_or("untitled");
+            let episode_dir = sanitize_path_component(episode_title);
+            let subdir = format!("{}/{}", season_dir, episode_dir);
+
+            let pages = episode.get("pages").and_then(|p| p.as_array());
+            if let Some(pages) = pages {
+                if pages.is_empty() {
+                    push_season_part(
+                        &mut items,
+                        bvid,
+                        1,
+                        episode_title,
+                        &subdir,
+                        &season_title,
+                    );
+                } else {
+                    for page in pages {
+                        let page_num = page
+                            .get("page")
+                            .and_then(|p| p.as_u64())
+                            .ok_or("page missing page number")? as u32;
+                        let part_title = page
+                            .get("part")
+                            .and_then(|p| p.as_str())
+                            .unwrap_or(episode_title);
+                        push_season_part(
+                            &mut items,
+                            bvid,
+                            page_num,
+                            part_title,
+                            &subdir,
+                            &season_title,
+                        );
+                    }
+                }
+            } else {
+                push_season_part(
+                    &mut items,
+                    bvid,
+                    1,
+                    episode_title,
+                    &subdir,
+                    &season_title,
+                );
+            }
+        }
+    }
+
+    Ok(items)
+}
+
+fn push_season_part(
+    items: &mut Vec<SeasonPart>,
+    bvid: &str,
+    page: u32,
+    part_title: &str,
+    subdir: &str,
+    season_title: &str,
+) {
+    let id = format!("{bvid}_p{page}");
+    let title = part_title.to_string();
+    let url = format!("https://www.bilibili.com/video/{bvid}?p={page}");
+    let sanitized_part = sanitize_path_component(part_title);
+    let output_stem = format!("{sanitized_part} [{id}]");
+    items.push(SeasonPart {
+        id,
+        title,
+        url,
+        subdir: subdir.to_string(),
+        output_stem,
+        season_title: season_title.to_string(),
+    });
+}
+
 pub fn sanitize_path_component(name: &str) -> String {
     const MAX: usize = 80;
     let mut out = String::new();
@@ -56,5 +181,24 @@ mod tests {
         assert_eq!(sanitize_path_component("A/B:C*"), "A_B_C_");
         assert_eq!(sanitize_path_component("  hi  "), "hi");
         assert!(sanitize_path_component(&"x".repeat(200)).chars().count() <= 80);
+    }
+
+    #[test]
+    fn parse_ugc_season_expands_all_pages() {
+        let raw = include_str!("../tests/fixtures/bilibili_view_ugc_season.json");
+        let items = parse_ugc_season_items(raw).unwrap();
+        assert_eq!(items.len(), 4);
+        assert_eq!(items[0].id, "BV1NCgVzoEG9_p1");
+        assert_eq!(items[0].title, "01 从函数到神经网络");
+        assert_eq!(items[0].url, "https://www.bilibili.com/video/BV1NCgVzoEG9?p=1");
+        assert_eq!(items[0].subdir, "AI入门/【完整合集】一小时从函数到Transformer！");
+        assert_eq!(items[0].output_stem, "01 从函数到神经网络 [BV1NCgVzoEG9_p1]");
+        assert_eq!(items[2].id, "BV15z4C6SEHT_p1");
+    }
+
+    #[test]
+    fn parse_view_without_season_returns_empty() {
+        let raw = r#"{"code":0,"data":{"bvid":"BV1xx","title":"solo","pages":[{"page":1,"part":"p1"}]}}"#;
+        assert!(parse_ugc_season_items(raw).unwrap().is_empty());
     }
 }
