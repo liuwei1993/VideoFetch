@@ -208,6 +208,7 @@ pub fn sanitize_path_component(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn extract_bvid_from_video_url() {
@@ -257,5 +258,88 @@ mod tests {
         .unwrap()
         .expect("season");
         assert!(parts.len() >= 17);
+    }
+
+    /// End-to-end smoke: expand season and download first part of each episode.
+    #[test]
+    #[ignore]
+    fn live_download_two_season_parts() {
+        use std::process::Command;
+
+        let parts = try_expand_ugc_season_from_bv_url(
+            "https://www.bilibili.com/video/BV1NCgVzoEG9/",
+        )
+        .unwrap()
+        .expect("season");
+        assert!(parts.len() >= 17);
+
+        let first_a = parts
+            .iter()
+            .find(|p| p.id.starts_with("BV1NCgVzoEG9"))
+            .expect("ep1");
+        let first_b = parts
+            .iter()
+            .find(|p| p.id.starts_with("BV15z4C6SEHT"))
+            .expect("ep2");
+
+        let root = std::env::temp_dir().join(format!(
+            "videofetch_ugc_dl_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+
+        let ytdlp = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("binaries")
+            .join(format!("yt-dlp-{}", env!("VIDEOFETCH_HOST_TRIPLE")));
+        assert!(
+            ytdlp.exists(),
+            "missing yt-dlp sidecar at {}",
+            ytdlp.display()
+        );
+
+        for part in [first_a, first_b] {
+            let out_dir = root.join("未分类").join(&part.subdir);
+            std::fs::create_dir_all(&out_dir).unwrap();
+            let template = out_dir
+                .join(format!("{}.%(ext)s", part.output_stem))
+                .to_string_lossy()
+                .into_owned();
+            let status = Command::new(&ytdlp)
+                .args([
+                    "--newline",
+                    "--no-playlist",
+                    "-f",
+                    "bv*[height<=720][vcodec^=avc1]+ba[acodec^=mp4a]/b[height<=720][vcodec^=avc1]/bv*[height<=720]+ba/b[height<=720]",
+                    "--merge-output-format",
+                    "mp4",
+                    "-o",
+                    &template,
+                    "--no-mtime",
+                    &part.url,
+                ])
+                .status()
+                .expect("spawn yt-dlp");
+            assert!(status.success(), "yt-dlp failed for {}", part.url);
+            let matches: Vec<_> = std::fs::read_dir(&out_dir)
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .filter(|e| {
+                    e.path()
+                        .extension()
+                        .and_then(|x| x.to_str())
+                        .is_some_and(|ext| ext.eq_ignore_ascii_case("mp4"))
+                })
+                .collect();
+            assert!(
+                !matches.is_empty(),
+                "no mp4 in {}",
+                out_dir.display()
+            );
+            eprintln!("downloaded {} -> {}", part.id, matches[0].path().display());
+        }
     }
 }

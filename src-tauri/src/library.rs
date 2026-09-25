@@ -259,18 +259,24 @@ pub fn list_videos(root: &Path, category: &str) -> Result<Vec<VideoItem>, String
         return Ok(vec![]);
     }
     let mut items = Vec::new();
-    for entry in fs::read_dir(&dir).map_err(|e| e.to_string())? {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let path = entry.path();
-        if path.is_file() && is_video(&path) {
-            let meta = entry.metadata().map_err(|e| e.to_string())?;
-            items.push(VideoItem {
-                name: entry.file_name().to_string_lossy().into_owned(),
-                path: path.to_string_lossy().into_owned(),
-                size: meta.len(),
-            });
+    fn walk(dir: &Path, items: &mut Vec<VideoItem>) -> Result<(), String> {
+        for entry in fs::read_dir(dir).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, items)?;
+            } else if path.is_file() && is_video(&path) {
+                let meta = entry.metadata().map_err(|e| e.to_string())?;
+                items.push(VideoItem {
+                    name: entry.file_name().to_string_lossy().into_owned(),
+                    path: path.to_string_lossy().into_owned(),
+                    size: meta.len(),
+                });
+            }
         }
+        Ok(())
     }
+    walk(&dir, &mut items)?;
     items.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(items)
 }
@@ -350,6 +356,20 @@ mod tests {
         assert!(cats.contains(&"未分类".into()));
         assert!(cats.contains(&"脱口秀".into()));
         assert_eq!(cats[0], "未分类");
+    }
+
+    #[test]
+    fn list_videos_recurses_into_subdirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let nested = root.join("未分类").join("AI入门").join("课1");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("a [BV1_p1].mp4"), b"x").unwrap();
+        std::fs::write(root.join("未分类").join("top.mp4"), b"y").unwrap();
+        let items = list_videos(root, "未分类").unwrap();
+        assert_eq!(items.len(), 2);
+        assert!(items.iter().any(|v| v.name == "a [BV1_p1].mp4"));
+        assert!(items.iter().any(|v| v.name == "top.mp4"));
     }
 
     #[test]
