@@ -41,3 +41,6 @@ downloads/
 *.mkv
 *.part
 *.ytdl
+
+# Local AppImage / build artifacts
+.build/

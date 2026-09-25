@@ -367,8 +367,9 @@ fn emit_job_upsert(app: &AppHandle, job_id: &str) {
 fn job_overall_percent(job_id: &str, item_percent: Option<f64>) -> Option<f64> {
     let job = get_job(job_id)?;
     if job.kind == queue::QueueKind::Batch && job.total > 1 {
+        // Batch progress is count-based: completed / total. Ignore per-file percent.
         match item_percent {
-            Some(p) => Some(batch_overall_percent(job.completed, job.total, Some(p))),
+            Some(_) => Some(batch_overall_percent(job.completed, job.total)),
             None => job.percent,
         }
     } else {
@@ -376,12 +377,11 @@ fn job_overall_percent(job_id: &str, item_percent: Option<f64>) -> Option<f64> {
     }
 }
 
-fn batch_overall_percent(done: usize, total: usize, current: Option<f64>) -> f64 {
+fn batch_overall_percent(done: usize, total: usize) -> f64 {
     if total == 0 {
         return 0.0;
     }
-    let cur = current.unwrap_or(0.0).clamp(0.0, 100.0) / 100.0;
-    ((done as f64) + cur) / (total as f64) * 100.0
+    (done as f64) / (total as f64) * 100.0
 }
 
 fn item_status_label(status: queue::ItemStatus) -> String {
@@ -1562,7 +1562,7 @@ fn run_batch_download(
     patch_job(app, job_id, true, |job| {
         job.total = total;
         job.status = queue::JobStatus::Downloading;
-        job.percent = Some(batch_overall_percent(job.completed, total.max(1), Some(0.0)));
+        job.percent = Some(batch_overall_percent(job.completed, total.max(1)));
     });
 
     let configured = settings::clamp_max_concurrent(settings.max_concurrent_downloads) as usize;
@@ -1638,7 +1638,7 @@ fn run_batch_download(
                     succeeded.fetch_add(1, Ordering::SeqCst);
                     persist_item_status(&app, &job_id, index, queue::ItemStatus::Done);
                     patch_job(&app, &job_id, true, |job| {
-                        job.percent = Some(batch_overall_percent(job.completed, job.total, Some(0.0)));
+                        job.percent = Some(batch_overall_percent(job.completed, job.total));
                     });
                     let _ = app.emit(
                         "download-item-finished",
@@ -1873,11 +1873,12 @@ mod tests {
     }
 
     #[test]
-    fn batch_overall_percent_folds_current_item() {
-        assert_eq!(batch_overall_percent(3, 10, Some(50.0)), 35.0);
-        assert_eq!(batch_overall_percent(0, 1, Some(40.0)), 40.0);
-        assert_eq!(batch_overall_percent(0, 0, Some(10.0)), 0.0);
-        assert_eq!(batch_overall_percent(2, 4, None), 50.0);
+    fn batch_overall_percent_uses_completed_count() {
+        assert_eq!(batch_overall_percent(3, 10), 30.0);
+        assert_eq!(batch_overall_percent(0, 1), 0.0);
+        assert_eq!(batch_overall_percent(0, 0), 0.0);
+        assert_eq!(batch_overall_percent(2, 4), 50.0);
+        assert_eq!(batch_overall_percent(4, 4), 100.0);
     }
 
     #[test]
