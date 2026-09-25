@@ -1,3 +1,49 @@
+pub fn fetch_view_json(bvid: &str) -> Result<String, String> {
+    let url = format!("https://api.bilibili.com/x/web-interface/view?bvid={bvid}");
+    let body = ureq::get(&url)
+        .set("User-Agent", "Mozilla/5.0 (compatible; VideoFetch/0.1)")
+        .set("Referer", "https://www.bilibili.com/")
+        .call()
+        .map_err(|e| format!("请求 B 站视频信息失败: {e}"))?
+        .into_string()
+        .map_err(|e| format!("读取 B 站视频信息失败: {e}"))?;
+    Ok(body)
+}
+
+fn ugc_season_present(json: &str) -> Result<bool, String> {
+    let root: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| format!("invalid JSON: {e}"))?;
+
+    if let Some(code) = root.get("code").and_then(|c| c.as_i64()) {
+        if code != 0 {
+            return Err(format!("bilibili API code {code}"));
+        }
+    }
+
+    Ok(root
+        .get("data")
+        .and_then(|d| d.get("ugc_season"))
+        .map(|s| !s.is_null())
+        .unwrap_or(false))
+}
+
+/// Returns Some(parts) if ugc_season present and non-empty; None if no season key.
+/// If ugc_season key is present but expands to 0 parts → Err (not Ok(None)).
+pub fn try_expand_ugc_season_from_bv_url(page_url: &str) -> Result<Option<Vec<SeasonPart>>, String> {
+    let Some(bvid) = extract_bvid(page_url) else {
+        return Ok(None);
+    };
+    let json = fetch_view_json(&bvid)?;
+    if !ugc_season_present(&json)? {
+        return Ok(None);
+    }
+    let items = parse_ugc_season_items(&json)?;
+    if items.is_empty() {
+        return Err("合集为空或无法解析条目".to_string());
+    }
+    Ok(Some(items))
+}
+
 pub fn extract_bvid(url: &str) -> Option<String> {
     let lower = url.to_lowercase();
     let marker = "/video/";
@@ -200,5 +246,16 @@ mod tests {
     fn parse_view_without_season_returns_empty() {
         let raw = r#"{"code":0,"data":{"bvid":"BV1xx","title":"solo","pages":[{"page":1,"part":"p1"}]}}"#;
         assert!(parse_ugc_season_items(raw).unwrap().is_empty());
+    }
+
+    #[test]
+    #[ignore]
+    fn live_fetch_ai_rumen_season() {
+        let parts = try_expand_ugc_season_from_bv_url(
+            "https://www.bilibili.com/video/BV1NCgVzoEG9/",
+        )
+        .unwrap()
+        .expect("season");
+        assert!(parts.len() >= 17);
     }
 }
