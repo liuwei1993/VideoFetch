@@ -9,6 +9,12 @@ use std::process::{Command, Stdio};
 pub struct PlaylistItem {
     pub id: String,
     pub title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subdir: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_stem: Option<String>,
 }
 
 pub fn bilibili_video_url(id: &str) -> String {
@@ -20,6 +26,15 @@ pub fn item_video_url(page_url: &str, id: &str) -> String {
         site::Site::Youtube => format!("https://www.youtube.com/watch?v={id}"),
         _ => bilibili_video_url(id),
     }
+}
+
+pub fn resolve_item_url(page_url: &str, item: &PlaylistItem) -> String {
+    if let Some(ref u) = item.url {
+        if !u.is_empty() {
+            return u.clone();
+        }
+    }
+    item_video_url(page_url, &item.id)
 }
 
 pub fn parse_flat_playlist_output(stdout: &str) -> Vec<PlaylistItem> {
@@ -44,6 +59,9 @@ pub fn parse_flat_playlist_output(stdout: &str) -> Vec<PlaylistItem> {
         items.push(PlaylistItem {
             id: id.to_string(),
             title,
+            url: None,
+            subdir: None,
+            output_stem: None,
         });
     }
     items
@@ -157,6 +175,21 @@ mod tests {
                 "s_1DlVFOPIA"
             ),
             "https://www.youtube.com/watch?v=s_1DlVFOPIA"
+        );
+    }
+
+    #[test]
+    fn resolve_item_url_prefers_explicit() {
+        let item = PlaylistItem {
+            id: "BV1xx_p2".into(),
+            title: "p2".into(),
+            url: Some("https://www.bilibili.com/video/BV1xx?p=2".into()),
+            subdir: None,
+            output_stem: None,
+        };
+        assert_eq!(
+            resolve_item_url("https://www.bilibili.com/video/BV1xx", &item),
+            "https://www.bilibili.com/video/BV1xx?p=2"
         );
     }
 }

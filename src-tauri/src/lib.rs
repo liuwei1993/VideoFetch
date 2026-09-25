@@ -1,3 +1,4 @@
+mod bilibili;
 mod download;
 mod library;
 mod playlist;

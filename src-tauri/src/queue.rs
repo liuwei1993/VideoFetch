@@ -28,6 +28,10 @@ pub struct QueueItem {
     pub title: String,
     pub url: String,
     pub status: ItemStatus,
+    #[serde(default)]
+    pub subdir: Option<String>,
+    #[serde(default)]
+    pub output_stem: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -488,6 +492,8 @@ mod tests {
                     title: "一".into(),
                     url: "https://www.bilibili.com/video/BV1".into(),
                     status: ItemStatus::Done,
+                    subdir: None,
+                    output_stem: None,
                 },
                 QueueItem {
                     index: 1,
@@ -495,6 +501,8 @@ mod tests {
                     title: "二".into(),
                     url: "https://www.bilibili.com/video/BV2".into(),
                     status: ItemStatus::Pending,
+                    subdir: None,
+                    output_stem: None,
                 },
             ],
         }

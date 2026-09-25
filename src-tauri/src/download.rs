@@ -205,6 +205,8 @@ static RUNTIMES: LazyLock<Mutex<HashMap<String, Arc<JobRuntime>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 static HYDRATED: AtomicBool = AtomicBool::new(false);
 static QUEUE_PERSIST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+static SEASON_PREFETCH: LazyLock<Mutex<HashMap<String, Vec<crate::bilibili::SeasonPart>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn next_job_id() -> String {
     let n = JOB_SEQ.fetch_add(1, Ordering::SeqCst);
@@ -946,6 +948,8 @@ fn spawn_job_thread(app: AppHandle, job: queue::DownloadJob, resume_items: Optio
                         &job_id,
                         &url,
                         &job.category,
+                        None,
+                        None,
                         &job.quality,
                         job.audio_only,
                         true,
@@ -1021,17 +1025,33 @@ pub fn start_download(app: AppHandle, args: StartDownloadArgs) -> Result<StartDo
         args.quality.trim().to_string()
     };
     let audio_only = args.audio_only;
-    let kind = if site::is_batch_url(&url) {
+    let mut kind = if site::is_batch_url(&url) {
         queue::QueueKind::Batch
     } else {
         queue::QueueKind::Single
     };
+    let mut season_parts: Option<Vec<crate::bilibili::SeasonPart>> = None;
+    if kind == queue::QueueKind::Single && crate::bilibili::extract_bvid(&url).is_some() {
+        match crate::bilibili::try_expand_ugc_season_from_bv_url(&url) {
+            Ok(Some(parts)) => {
+                kind = queue::QueueKind::Batch;
+                season_parts = Some(parts);
+            }
+            Ok(None) => {}
+            Err(e) => return Err(e),
+        }
+    }
 
     if let Ok(settings) = settings::load_settings(&app) {
         SLOT_POOL.set_capacity(settings::clamp_max_concurrent(settings.max_concurrent_downloads) as usize);
     }
 
     let job_id = next_job_id();
+    if let Some(parts) = season_parts {
+        if let Ok(mut map) = SEASON_PREFETCH.lock() {
+            map.insert(job_id.clone(), parts);
+        }
+    }
     let mut job = queue::DownloadJob::new(
         job_id.clone(),
         url,
@@ -1048,6 +1068,8 @@ pub fn start_download(app: AppHandle, args: StartDownloadArgs) -> Result<StartDo
             title: item_id,
             url: job.url.clone(),
             status: queue::ItemStatus::Pending,
+            subdir: None,
+            output_stem: None,
         }];
         job.total = 1;
     }
@@ -1111,6 +1133,8 @@ fn run_download(
     job_id: &str,
     url: &str,
     category: &str,
+    subdir: Option<&str>,
+    output_stem: Option<&str>,
     quality: &str,
     audio_only: bool,
     update_last_category: bool,
@@ -1140,6 +1164,8 @@ fn run_download(
             job_id,
             url,
             category,
+            subdir,
+            output_stem,
             quality,
             audio_only,
             false,
@@ -1175,6 +1201,8 @@ fn run_download_once(
     job_id: &str,
     url: &str,
     category: &str,
+    subdir: Option<&str>,
+    output_stem: Option<&str>,
     quality: &str,
     audio_only: bool,
     update_last_category: bool,
@@ -1191,11 +1219,28 @@ fn run_download_once(
         }
     })?;
 
-    let out_dir = root.join(category);
-    let template = out_dir
-        .join("%(title)s [%(id)s].%(ext)s")
-        .to_string_lossy()
-        .into_owned();
+    let mut out_dir = root.join(category);
+    if let Some(sub) = subdir {
+        for part in sub.split('/') {
+            if part.is_empty() || part == "." || part == ".." {
+                continue;
+            }
+            out_dir = out_dir.join(part);
+        }
+    }
+    std::fs::create_dir_all(&out_dir).map_err(|e| format!("创建合集目录失败: {e}"))?;
+
+    let template = if let Some(stem) = output_stem {
+        out_dir
+            .join(format!("{stem}.%(ext)s"))
+            .to_string_lossy()
+            .into_owned()
+    } else {
+        out_dir
+            .join("%(title)s [%(id)s].%(ext)s")
+            .to_string_lossy()
+            .into_owned()
+    };
 
     let (bin, prefix) = resolve_ytdlp()?;
     let site = site::detect_site(url);
@@ -1399,6 +1444,9 @@ fn run_batch_download(
             .map(|i| crate::playlist::PlaylistItem {
                 id: i.id.clone(),
                 title: i.title.clone(),
+                url: Some(i.url.clone()),
+                subdir: i.subdir.clone(),
+                output_stem: i.output_stem.clone(),
             })
             .collect();
         let batch_meta: Vec<BatchItemMeta> = sorted
@@ -1417,7 +1465,45 @@ fn run_batch_download(
         (playlist_items, batch_meta, work_indices)
     } else {
         emit_line(app, job_id, "正在解析合集…");
-        let items = crate::playlist::expand_playlist(page_url, &settings, job_id)?;
+        let prefetched = SEASON_PREFETCH
+            .lock()
+            .ok()
+            .and_then(|mut map| map.remove(job_id));
+        let (items, season_title): (Vec<crate::playlist::PlaylistItem>, Option<String>) =
+            if let Some(parts) = prefetched {
+                let title = parts.first().map(|p| p.season_title.clone());
+                let items = parts
+                    .into_iter()
+                    .map(|p| crate::playlist::PlaylistItem {
+                        id: p.id,
+                        title: p.title,
+                        url: Some(p.url),
+                        subdir: Some(p.subdir),
+                        output_stem: Some(p.output_stem),
+                    })
+                    .collect();
+                (items, title)
+            } else if crate::bilibili::extract_bvid(page_url).is_some() {
+                let parts = crate::bilibili::try_expand_ugc_season_from_bv_url(page_url)?
+                    .ok_or_else(|| "合集为空或无法解析条目".to_string())?;
+                let title = parts.first().map(|p| p.season_title.clone());
+                let items = parts
+                    .into_iter()
+                    .map(|p| crate::playlist::PlaylistItem {
+                        id: p.id,
+                        title: p.title,
+                        url: Some(p.url),
+                        subdir: Some(p.subdir),
+                        output_stem: Some(p.output_stem),
+                    })
+                    .collect();
+                (items, title)
+            } else {
+                (
+                    crate::playlist::expand_playlist(page_url, &settings, job_id)?,
+                    None,
+                )
+            };
         let batch_meta: Vec<BatchItemMeta> = items
             .iter()
             .map(|i| BatchItemMeta {
@@ -1433,20 +1519,26 @@ fn run_batch_download(
                 index,
                 id: i.id.clone(),
                 title: i.title.clone(),
-                url: crate::playlist::item_video_url(page_url, &i.id),
+                url: crate::playlist::resolve_item_url(page_url, i),
                 status: queue::ItemStatus::Pending,
+                subdir: i.subdir.clone(),
+                output_stem: i.output_stem.clone(),
             })
             .collect();
-        let title = items
-            .first()
-            .map(|i| {
-                if items.len() > 1 {
-                    format!("{} 等 {} 个", i.title, items.len())
-                } else {
-                    i.title.clone()
-                }
-            })
-            .unwrap_or_else(|| page_url.to_string());
+        let title = if let Some(season) = season_title {
+            format!("{} · {} 集", season, items.len())
+        } else {
+            items
+                .first()
+                .map(|i| {
+                    if items.len() > 1 {
+                        format!("{} 等 {} 个", i.title, items.len())
+                    } else {
+                        i.title.clone()
+                    }
+                })
+                .unwrap_or_else(|| page_url.to_string())
+        };
         patch_job(app, job_id, true, |job| {
             job.items = queue_items;
             job.total = items.len();
@@ -1529,9 +1621,19 @@ fn run_batch_download(
                     id: item.id.clone(),
                 },
             );
-            let url = crate::playlist::item_video_url(&page_url, &item.id);
-            match run_download(&app, &job_id, &url, &category, &quality, audio_only, false, false)
-            {
+            let url = crate::playlist::resolve_item_url(&page_url, item);
+            match run_download(
+                &app,
+                &job_id,
+                &url,
+                &category,
+                item.subdir.as_deref(),
+                item.output_stem.as_deref(),
+                &quality,
+                audio_only,
+                false,
+                false,
+            ) {
                 Ok(path) => {
                     succeeded.fetch_add(1, Ordering::SeqCst);
                     persist_item_status(&app, &job_id, index, queue::ItemStatus::Done);
