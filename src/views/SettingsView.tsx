@@ -82,7 +82,7 @@ export function SettingsView({ onSaved }: Props) {
           />
         </Form.Item>
 
-        <Form.Item label="YouTube 代理" extra="YouTube / MissAV 使用此代理；Bilibili 默认直连，可在下方单独开启">
+        <Form.Item label="YouTube 代理" extra="YouTube / MissAV 使用此代理；Bilibili 默认直连，可在下方单独开启。抖音直连。">
           <Input
             value={settings.youtube_proxy}
             onChange={(e) =>

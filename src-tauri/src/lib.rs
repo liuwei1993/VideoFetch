@@ -1,4 +1,5 @@
 mod bilibili;
+mod douyin;
 mod download;
 mod library;
 mod playlist;

@@ -1230,6 +1230,32 @@ fn run_download_once(
     }
     std::fs::create_dir_all(&out_dir).map_err(|e| format!("创建合集目录失败: {e}"))?;
 
+    let (bin, prefix) = resolve_ytdlp()?;
+    let site = site::detect_site(url);
+    let mut download_url = url.to_string();
+    let mut resolved_stem: Option<String> = None;
+    if site == Site::Douyin {
+        emit_line(app, job_id, "解析抖音视频…");
+        let rt = runtime_for(job_id);
+        let media =
+            crate::douyin::resolve(url, quality, rt.as_ref().map(|r| &r.cancelled))?;
+        emit_line(
+            app,
+            job_id,
+            &format!("抖音 · {} · {}", media.title, media.ratio),
+        );
+        patch_job(app, job_id, true, |job| {
+            if !media.title.is_empty() {
+                job.title = media.title.clone();
+            }
+        });
+        if output_stem.is_none() {
+            resolved_stem = Some(media.output_stem());
+        }
+        download_url = media.play_url;
+    }
+    let output_stem = resolved_stem.as_deref().or(output_stem);
+
     let template = if let Some(stem) = output_stem {
         out_dir
             .join(format!("{stem}.%(ext)s"))
@@ -1242,8 +1268,6 @@ fn run_download_once(
             .into_owned()
     };
 
-    let (bin, prefix) = resolve_ytdlp()?;
-    let site = site::detect_site(url);
     if site == Site::Missav && !site::is_missav_single_video_url(url) {
         return Err(
             "MissAV 目前仅支持单视频链接，例如 https://missav.ws/cn/番号 或 https://missav.ws/dm127/cn/番号（首页和列表稍后支持）"
@@ -1271,6 +1295,9 @@ fn run_download_once(
             .arg("mp3")
             .arg("--audio-quality")
             .arg("0");
+    } else if site == Site::Douyin {
+        // The play endpoint is already one H.264 mp4; a format selector rejects it.
+        cmd.arg("--merge-output-format").arg("mp4");
     } else {
         cmd.arg("-f")
             .arg(site::format_selector(quality))
@@ -1293,6 +1320,13 @@ fn run_download_once(
         cmd.arg("--proxy").arg(proxy);
     }
 
+    if site == Site::Douyin {
+        cmd.arg("--referer")
+            .arg("https://www.douyin.com/")
+            .arg("--user-agent")
+            .arg(crate::douyin::MOBILE_UA);
+    }
+
     if site == Site::Missav {
         let plugin_dirs = ytdlp_plugin_dirs(app);
         if plugin_dirs.is_empty() {
@@ -1305,7 +1339,7 @@ fn run_download_once(
         cmd.arg("--impersonate").arg("Safari-18.0");
     }
 
-    cmd.arg(url);
+    cmd.arg(&download_url);
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     #[cfg(unix)]
     {
@@ -1318,6 +1352,7 @@ fn run_download_once(
         Site::Youtube => "YouTube",
         Site::Bilibili => "Bilibili",
         Site::Missav => "MissAV",
+        Site::Douyin => "抖音",
         Site::Unknown => "未知站点",
     };
     let proxy_label = proxy

@@ -5,6 +5,7 @@ pub enum Site {
     Youtube,
     Bilibili,
     Missav,
+    Douyin,
     Unknown,
 }
 
@@ -32,9 +33,56 @@ pub fn detect_site(url: &str) -> Site {
         Site::Bilibili
     } else if is_missav_host(&lower) {
         Site::Missav
+    } else if is_douyin_urlish(&lower) {
+        Site::Douyin
     } else {
         Site::Unknown
     }
+}
+
+fn is_douyin_host(url_lower: &str) -> bool {
+    let host = url_host(url_lower);
+    host == "douyin.com"
+        || host.ends_with(".douyin.com")
+        || host == "iesdouyin.com"
+        || host.ends_with(".iesdouyin.com")
+}
+
+/// Also matches share paste without a scheme (`v.douyin.com/xxx`) and text with an embedded URL.
+fn is_douyin_urlish(url_lower: &str) -> bool {
+    if is_douyin_host(url_lower) {
+        return true;
+    }
+    for needle in [
+        "://v.douyin.com/",
+        "://www.douyin.com/",
+        "://m.douyin.com/",
+        "://www.iesdouyin.com/",
+        "://iesdouyin.com/",
+        "://douyin.com/",
+    ] {
+        if url_lower.contains(needle) {
+            return true;
+        }
+    }
+    for needle in [
+        "v.douyin.com/",
+        "www.douyin.com/",
+        "m.douyin.com/",
+        "www.iesdouyin.com/",
+        "iesdouyin.com/",
+    ] {
+        if let Some(i) = url_lower.find(needle) {
+            let before_ok = i == 0 || {
+                let b = url_lower.as_bytes()[i - 1];
+                !b.is_ascii_alphanumeric()
+            };
+            if before_ok {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn url_host(url: &str) -> &str {
@@ -333,5 +381,34 @@ mod tests {
         assert!(proxy_for(Site::Bilibili, &s).is_some());
         s.youtube_proxy = String::new();
         assert!(proxy_for(Site::Missav, &s).is_none());
+        assert!(proxy_for(Site::Douyin, &s).is_none());
+    }
+
+    #[test]
+    fn detect_douyin_hosts() {
+        assert_eq!(
+            detect_site("https://www.douyin.com/video/7289364577651821876"),
+            Site::Douyin
+        );
+        assert_eq!(
+            detect_site(
+                "https://www.iesdouyin.com/share/video/7289364577651821876/?region=CN"
+            ),
+            Site::Douyin
+        );
+        assert_eq!(detect_site("https://v.douyin.com/iR2syBRn/"), Site::Douyin);
+        assert_eq!(
+            detect_site("复制打开抖音 https://v.douyin.com/iR2syBRn/ 复制此链接"),
+            Site::Douyin
+        );
+        assert_eq!(detect_site("v.douyin.com/iR2syBRn/"), Site::Douyin);
+        assert_eq!(
+            detect_site("https://evil.example/douyin.com/video/1"),
+            Site::Unknown
+        );
+        assert_eq!(
+            detect_site("https://www.youtube.com/watch?v=abc"),
+            Site::Youtube
+        );
     }
 }
