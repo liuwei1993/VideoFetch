@@ -29,7 +29,9 @@ fn ugc_season_present(json: &str) -> Result<bool, String> {
 
 /// Returns Some(parts) if ugc_season present and non-empty; None if no season key.
 /// If ugc_season key is present but expands to 0 parts → Err (not Ok(None)).
-pub fn try_expand_ugc_season_from_bv_url(page_url: &str) -> Result<Option<Vec<SeasonPart>>, String> {
+pub fn try_expand_ugc_season_from_bv_url(
+    page_url: &str,
+) -> Result<Option<Vec<SeasonPart>>, String> {
     let Some(bvid) = extract_bvid(page_url) else {
         return Ok(None);
     };
@@ -109,18 +111,22 @@ pub fn parse_ugc_season_items(json: &str) -> Result<Vec<SeasonPart>, String> {
                 .get("title")
                 .and_then(|t| t.as_str())
                 .unwrap_or("untitled");
-            let episode_dir = sanitize_path_component(episode_title);
-            let subdir = format!("{}/{}", season_dir, episode_dir);
-
+            // Files sit directly in the season folder. A one-page episode uses the
+            // episode title; multi-page episodes keep each part title.
             let pages = episode.get("pages").and_then(|p| p.as_array());
             if let Some(pages) = pages {
-                if pages.is_empty() {
+                if pages.len() <= 1 {
+                    let page_num = pages
+                        .first()
+                        .and_then(|p| p.get("page"))
+                        .and_then(|p| p.as_u64())
+                        .unwrap_or(1) as u32;
                     push_season_part(
                         &mut items,
                         bvid,
-                        1,
+                        page_num,
                         episode_title,
-                        &subdir,
+                        &season_dir,
                         &season_title,
                     );
                 } else {
@@ -128,7 +134,8 @@ pub fn parse_ugc_season_items(json: &str) -> Result<Vec<SeasonPart>, String> {
                         let page_num = page
                             .get("page")
                             .and_then(|p| p.as_u64())
-                            .ok_or("page missing page number")? as u32;
+                            .ok_or("page missing page number")?
+                            as u32;
                         let part_title = page
                             .get("part")
                             .and_then(|p| p.as_str())
@@ -138,7 +145,7 @@ pub fn parse_ugc_season_items(json: &str) -> Result<Vec<SeasonPart>, String> {
                             bvid,
                             page_num,
                             part_title,
-                            &subdir,
+                            &season_dir,
                             &season_title,
                         );
                     }
@@ -149,11 +156,18 @@ pub fn parse_ugc_season_items(json: &str) -> Result<Vec<SeasonPart>, String> {
                     bvid,
                     1,
                     episode_title,
-                    &subdir,
+                    &season_dir,
                     &season_title,
                 );
             }
         }
+    }
+
+    let width = crate::library::collection_index_width(items.len());
+    for (i, item) in items.iter_mut().enumerate() {
+        let sanitized = sanitize_path_component(&item.title);
+        item.output_stem =
+            crate::library::format_collection_stem(i + 1, width, &sanitized, &item.id);
     }
 
     Ok(items)
@@ -170,14 +184,12 @@ fn push_season_part(
     let id = format!("{bvid}_p{page}");
     let title = part_title.to_string();
     let url = format!("https://www.bilibili.com/video/{bvid}?p={page}");
-    let sanitized_part = sanitize_path_component(part_title);
-    let output_stem = format!("{sanitized_part} [{id}]");
     items.push(SeasonPart {
         id,
         title,
         url,
         subdir: subdir.to_string(),
-        output_stem,
+        output_stem: String::new(),
         season_title: season_title.to_string(),
     });
 }
@@ -237,26 +249,57 @@ mod tests {
         assert_eq!(items.len(), 4);
         assert_eq!(items[0].id, "BV1NCgVzoEG9_p1");
         assert_eq!(items[0].title, "01 从函数到神经网络");
-        assert_eq!(items[0].url, "https://www.bilibili.com/video/BV1NCgVzoEG9?p=1");
-        assert_eq!(items[0].subdir, "AI入门/【完整合集】一小时从函数到Transformer！");
-        assert_eq!(items[0].output_stem, "01 从函数到神经网络 [BV1NCgVzoEG9_p1]");
+        assert_eq!(
+            items[0].url,
+            "https://www.bilibili.com/video/BV1NCgVzoEG9?p=1"
+        );
+        assert_eq!(items[0].subdir, "AI入门");
+        assert_eq!(items[1].subdir, "AI入门");
+        assert_eq!(
+            items[0].output_stem,
+            "01 从函数到神经网络 [BV1NCgVzoEG9_p1]"
+        );
+        assert_eq!(
+            items[1].output_stem,
+            "02 计算神经网络的参数 [BV1NCgVzoEG9_p2]"
+        );
         assert_eq!(items[2].id, "BV15z4C6SEHT_p1");
+        assert_eq!(items[2].output_stem, "03 没什么用的前言 [BV15z4C6SEHT_p1]");
+        assert_eq!(items[3].output_stem, "04 定义问题 [BV15z4C6SEHT_p2]");
+    }
+
+    #[test]
+    fn single_page_episode_uses_collection_title_in_season_dir() {
+        let raw = r#"{"code":0,"data":{"ugc_season":{"title":"深度学习","sections":[{"episodes":[{"bvid":"BV1db9dBEETc","title":"深度学习环境安装","pages":[{"page":1,"part":"02 环境安装"}]},{"bvid":"BV13UGu6yErd","title":"注意力机制：大模型前夜的最后一块拼图","pages":[{"page":1,"part":"Attention机制"}]}]}]}}}"#;
+        let items = parse_ugc_season_items(raw).unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].subdir, "深度学习");
+        assert_eq!(items[1].subdir, "深度学习");
+        assert_eq!(items[0].title, "深度学习环境安装");
+        assert_eq!(
+            items[0].output_stem,
+            "01 深度学习环境安装 [BV1db9dBEETc_p1]"
+        );
+        assert_eq!(
+            items[1].output_stem,
+            "02 注意力机制：大模型前夜的最后一块拼图 [BV13UGu6yErd_p1]"
+        );
     }
 
     #[test]
     fn parse_view_without_season_returns_empty() {
-        let raw = r#"{"code":0,"data":{"bvid":"BV1xx","title":"solo","pages":[{"page":1,"part":"p1"}]}}"#;
+        let raw =
+            r#"{"code":0,"data":{"bvid":"BV1xx","title":"solo","pages":[{"page":1,"part":"p1"}]}}"#;
         assert!(parse_ugc_season_items(raw).unwrap().is_empty());
     }
 
     #[test]
     #[ignore]
     fn live_fetch_ai_rumen_season() {
-        let parts = try_expand_ugc_season_from_bv_url(
-            "https://www.bilibili.com/video/BV1NCgVzoEG9/",
-        )
-        .unwrap()
-        .expect("season");
+        let parts =
+            try_expand_ugc_season_from_bv_url("https://www.bilibili.com/video/BV1NCgVzoEG9/")
+                .unwrap()
+                .expect("season");
         assert!(parts.len() >= 17);
     }
 
@@ -266,11 +309,10 @@ mod tests {
     fn live_download_two_season_parts() {
         use std::process::Command;
 
-        let parts = try_expand_ugc_season_from_bv_url(
-            "https://www.bilibili.com/video/BV1NCgVzoEG9/",
-        )
-        .unwrap()
-        .expect("season");
+        let parts =
+            try_expand_ugc_season_from_bv_url("https://www.bilibili.com/video/BV1NCgVzoEG9/")
+                .unwrap()
+                .expect("season");
         assert!(parts.len() >= 17);
 
         let first_a = parts
@@ -334,11 +376,7 @@ mod tests {
                         .is_some_and(|ext| ext.eq_ignore_ascii_case("mp4"))
                 })
                 .collect();
-            assert!(
-                !matches.is_empty(),
-                "no mp4 in {}",
-                out_dir.display()
-            );
+            assert!(!matches.is_empty(), "no mp4 in {}", out_dir.display());
             eprintln!("downloaded {} -> {}", part.id, matches[0].path().display());
         }
     }

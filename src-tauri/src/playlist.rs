@@ -68,7 +68,11 @@ pub fn parse_flat_playlist_output(stdout: &str) -> Vec<PlaylistItem> {
 }
 
 /// Run yt-dlp --flat-playlist and return items. Applies Bilibili proxy from settings.
-pub fn expand_playlist(url: &str, settings: &Settings, job_id: &str) -> Result<Vec<PlaylistItem>, String> {
+pub fn expand_playlist(
+    url: &str,
+    settings: &Settings,
+    job_id: &str,
+) -> Result<Vec<PlaylistItem>, String> {
     let (bin, prefix) = download::resolve_ytdlp()?;
     let mut cmd = Command::new(&bin);
     for p in &prefix {
@@ -137,11 +141,29 @@ pub fn expand_playlist(url: &str, settings: &Settings, job_id: &str) -> Result<V
             stderr.chars().take(400).collect::<String>()
         ));
     }
-    let items = parse_flat_playlist_output(&stdout);
+    let mut items = parse_flat_playlist_output(&stdout);
     if items.is_empty() {
         return Err("合集为空或无法解析条目".into());
     }
+    assign_collection_filenames(&mut items);
     Ok(items)
+}
+
+/// Number a flat playlist in listed order: `01 标题 [id]`.
+pub fn assign_collection_filenames(items: &mut [PlaylistItem]) {
+    let width = crate::library::collection_index_width(items.len());
+    for (i, item) in items.iter_mut().enumerate() {
+        if item.output_stem.is_some() {
+            continue;
+        }
+        let title = crate::bilibili::sanitize_path_component(&item.title);
+        item.output_stem = Some(crate::library::format_collection_stem(
+            i + 1,
+            width,
+            &title,
+            &item.id,
+        ));
+    }
 }
 
 #[cfg(test)]
@@ -176,6 +198,14 @@ mod tests {
             ),
             "https://www.youtube.com/watch?v=s_1DlVFOPIA"
         );
+    }
+
+    #[test]
+    fn assign_collection_filenames_prefixes_playlist_order() {
+        let mut items = parse_flat_playlist_output("BV1a\t02 环境安装\nBV1b\t10 个技巧\n");
+        assign_collection_filenames(&mut items);
+        assert_eq!(items[0].output_stem.as_deref(), Some("01 环境安装 [BV1a]"));
+        assert_eq!(items[1].output_stem.as_deref(), Some("02 10 个技巧 [BV1b]"));
     }
 
     #[test]

@@ -174,6 +174,101 @@ pub fn shorten_title(title: &str) -> String {
     window.iter().collect()
 }
 
+/// Digits used for collection prefixes. At least 2, wider when the season exceeds 99.
+pub fn collection_index_width(total: usize) -> usize {
+    total.max(1).to_string().len().max(2)
+}
+
+/// Drop a zero-padded uploader index (`02 `, `01.`, `00、`) so the collection index is the only prefix.
+/// Leaves real numbers alone: `10 个技巧`, `3.14`, `996.ICU`, `2024年度`.
+pub fn strip_leading_index(title: &str) -> &str {
+    let mut chars = title.char_indices().peekable();
+    let mut count = 0usize;
+    let mut zero_padded = false;
+    while let Some((_, c)) = chars.peek().copied() {
+        if !c.is_ascii_digit() {
+            break;
+        }
+        if count == 0 && c == '0' {
+            zero_padded = true;
+        }
+        count += 1;
+        if count > 3 {
+            return title;
+        }
+        chars.next();
+    }
+    if count < 2 || !zero_padded {
+        return title;
+    }
+    let Some((sep_idx, sep)) = chars.peek().copied() else {
+        return title;
+    };
+    let after_sep = sep_idx + sep.len_utf8();
+    let separates = match sep {
+        ' ' | '\t' | '、' => true,
+        '.' | '．' | '-' | '_' => match title[after_sep..].chars().next() {
+            Some(c) if c.is_ascii_alphanumeric() => false,
+            _ => true,
+        },
+        _ => false,
+    };
+    if !separates {
+        return title;
+    }
+    let rest = title[after_sep..].trim_start();
+    if rest.is_empty() {
+        title
+    } else {
+        rest
+    }
+}
+
+/// `{index} {title} [{id}]`, with any leading uploader index removed from `title`.
+pub fn format_collection_stem(index: usize, width: usize, title: &str, id: &str) -> String {
+    let trimmed = title.trim();
+    let stripped = strip_leading_index(trimmed);
+    let name = if stripped.is_empty() {
+        trimmed
+    } else {
+        stripped
+    };
+    let name = if name.is_empty() { "untitled" } else { name };
+    format!("{index:0width$} {name} [{id}]")
+}
+
+/// `04 标题` → `("04", "标题")` for prefixes this app writes (at least two digits).
+fn split_collection_index(title: &str) -> Option<(&str, &str)> {
+    let bytes = title.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        i += 1;
+    }
+    if !(2..=4).contains(&i) || bytes.get(i) != Some(&b' ') {
+        return None;
+    }
+    let rest = title[i + 1..].trim_start();
+    if rest.is_empty() {
+        None
+    } else {
+        Some((&title[..i], rest))
+    }
+}
+
+fn shorten_display_title(title: &str) -> String {
+    let raw = title.trim();
+    if let Some((index, rest)) = split_collection_index(raw) {
+        let shortened = shorten_title(rest);
+        if shortened.is_empty() {
+            raw.to_string()
+        } else {
+            format!("{index} {shortened}")
+        }
+    } else {
+        shorten_title(raw)
+    }
+}
+
 /// Split `title [id]` stem into (title, id). Falls back to (stem, "") if no trailing `[id]`.
 fn split_title_and_id(stem: &str) -> (String, Option<String>) {
     let Some(open) = stem.rfind(" [") else {
@@ -205,7 +300,7 @@ pub fn shorten_downloaded_filename(path: &Path) -> Result<PathBuf, String> {
         .ok_or_else(|| "无效文件名".to_string())?;
 
     let (title, id) = split_title_and_id(stem);
-    let short = shorten_title(title.trim());
+    let short = shorten_display_title(&title);
     if short == title.trim() {
         return Ok(path.to_path_buf());
     }
@@ -402,6 +497,49 @@ mod tests {
         assert_eq!(
             shorten_title(title),
             "一二三四五六七八九十甲乙丙丁戊己庚辛壬癸子丑寅卯辰"
+        );
+    }
+
+    #[test]
+    fn strip_leading_index_keeps_real_numbers() {
+        assert_eq!(strip_leading_index("02 环境安装"), "环境安装");
+        assert_eq!(
+            strip_leading_index("01. 从函数到神经网络"),
+            "从函数到神经网络"
+        );
+        assert_eq!(strip_leading_index("00、没什么用的前言"), "没什么用的前言");
+        assert_eq!(strip_leading_index("10 个技巧"), "10 个技巧");
+        assert_eq!(strip_leading_index("3.14 圆周率"), "3.14 圆周率");
+        assert_eq!(strip_leading_index("996.ICU"), "996.ICU");
+        assert_eq!(strip_leading_index("2024年度总结"), "2024年度总结");
+        assert_eq!(strip_leading_index("3Blue1Brown"), "3Blue1Brown");
+    }
+
+    #[test]
+    fn format_collection_stem_prefixes_order() {
+        assert_eq!(
+            format_collection_stem(1, 2, "02 环境安装", "BV1db9dBEETc_p1"),
+            "01 环境安装 [BV1db9dBEETc_p1]"
+        );
+        assert_eq!(
+            format_collection_stem(2, 2, "10 个技巧", "abc"),
+            "02 10 个技巧 [abc]"
+        );
+        assert_eq!(collection_index_width(34), 2);
+        assert_eq!(collection_index_width(100), 3);
+    }
+
+    #[test]
+    fn shorten_keeps_collection_index_outside_the_25_char_title() {
+        let title = "为什么是 Decoder-Only 的 GPT 赢了";
+        let stem = format!("34 {title} [BV16yhd6BEdf_p1]");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(format!("{stem}.mp4"));
+        fs::write(&path, b"x").unwrap();
+        let dest = shorten_downloaded_filename(&path).unwrap();
+        assert_eq!(
+            dest.file_name().and_then(|n| n.to_str()),
+            Some("34 为什么是 Decoder-Only 的 GPT 赢 [BV16yhd6BEdf_p1].mp4")
         );
     }
 
