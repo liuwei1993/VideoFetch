@@ -472,21 +472,32 @@ fn emit_session_outcome(app: &AppHandle, job_id: &str, session: Result<SessionOu
 }
 
 fn kill_pid(pid: u32) {
-    // Kill the process group first (covers ffmpeg children), then the pid.
-    let _ = Command::new("kill")
-        .args(["-TERM", "--", &format!("-{pid}")])
-        .status();
-    let _ = Command::new("kill")
-        .args(["-TERM", "--", &pid.to_string()])
-        .status();
-    // Escalate if still alive shortly after.
-    std::thread::sleep(Duration::from_millis(300));
-    let _ = Command::new("kill")
-        .args(["-KILL", "--", &format!("-{pid}")])
-        .status();
-    let _ = Command::new("kill")
-        .args(["-KILL", "--", &pid.to_string()])
-        .status();
+    #[cfg(windows)]
+    {
+        // /T kills yt-dlp plus ffmpeg children started under that process.
+        let _ = crate::background_command("taskkill")
+            .args(["/F", "/T", "/PID", &pid.to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    #[cfg(unix)]
+    {
+        // Kill the process group first (covers ffmpeg children), then the pid.
+        let _ = Command::new("kill")
+            .args(["-TERM", "--", &format!("-{pid}")])
+            .status();
+        let _ = Command::new("kill")
+            .args(["-TERM", "--", &pid.to_string()])
+            .status();
+        std::thread::sleep(Duration::from_millis(300));
+        let _ = Command::new("kill")
+            .args(["-KILL", "--", &format!("-{pid}")])
+            .status();
+        let _ = Command::new("kill")
+            .args(["-KILL", "--", &pid.to_string()])
+            .status();
+    }
 }
 
 pub fn stop_download(app: AppHandle, job_id: String) -> Result<(), String> {
@@ -569,30 +580,40 @@ pub fn resolve_ytdlp() -> Result<(String, Vec<String>), String> {
     if command_exists("yt-dlp") {
         return Ok(("yt-dlp".into(), vec![]));
     }
-    Err("未找到 yt-dlp。AppImage 应自带 yt-dlp；开发时请运行 scripts/fetch-linux-sidecars.sh，或安装 uv / yt-dlp，也可设置 VIDEOFETCH_YTDLP。".into())
+    Err("未找到 yt-dlp。安装包应自带 yt-dlp；开发时请运行 node scripts/prepare-sidecars.mjs，或安装 uv / yt-dlp，也可设置 VIDEOFETCH_YTDLP。".into())
+}
+
+fn sidecar_file_names(name: &str) -> Vec<String> {
+    let triple = env!("VIDEOFETCH_HOST_TRIPLE");
+    let stem = name.strip_suffix(".exe").unwrap_or(name);
+    let mut names = vec![name.to_string(), format!("{stem}-{triple}")];
+    if cfg!(windows) {
+        names.push(format!("{stem}.exe"));
+        names.push(format!("{stem}-{triple}.exe"));
+    }
+    names
 }
 
 /// Sidecar next to the app binary, in bundled resources, or the dev copy under src-tauri/binaries.
 pub fn bundled_executable(name: &str) -> Option<PathBuf> {
-    let mut candidates = Vec::new();
+    let names = sidecar_file_names(name);
+    let mut bases = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            candidates.push(dir.join(name));
+            bases.push(dir.to_path_buf());
         }
     }
     if let Ok(guard) = RESOURCE_DIR.lock() {
         if let Some(res) = guard.as_ref() {
-            candidates.push(res.join(name));
-            candidates.push(res.join("binaries").join(name));
+            bases.push(res.clone());
+            bases.push(res.join("binaries"));
         }
     }
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("binaries");
-    candidates.push(manifest.join(name));
-    candidates.push(manifest.join(format!(
-        "{name}-{}",
-        env!("VIDEOFETCH_HOST_TRIPLE")
-    )));
-    candidates.into_iter().find(|p| p.is_file())
+    bases.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("binaries"));
+    bases
+        .into_iter()
+        .flat_map(|dir| names.iter().map(move |file| dir.join(file)))
+        .find(|p| p.is_file())
 }
 
 /// Point yt-dlp at the bundled ffmpeg directory when present.
@@ -606,6 +627,9 @@ pub fn apply_bundled_ffmpeg(cmd: &mut Command) {
     cmd.arg("--ffmpeg-location").arg(dir);
     let old = std::env::var_os("PATH").unwrap_or_default();
     let mut prefixed = dir.as_os_str().to_os_string();
+    #[cfg(windows)]
+    prefixed.push(";");
+    #[cfg(not(windows))]
     prefixed.push(":");
     prefixed.push(old);
     cmd.env("PATH", prefixed);
@@ -640,14 +664,27 @@ const DOWNLOAD_ATTEMPTS: u32 = 3;
 const YOUTUBE_MAX_CONCURRENT: usize = 2;
 
 fn command_exists(name: &str) -> bool {
-    Command::new("sh")
-        .arg("-c")
-        .arg(format!("command -v {name}"))
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    #[cfg(windows)]
+    {
+        crate::background_command("where.exe")
+            .arg(name)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+    #[cfg(not(windows))]
+    {
+        Command::new("sh")
+            .arg("-c")
+            .arg(format!("command -v {name}"))
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
 }
 
 fn node_available() -> bool {
@@ -1278,7 +1315,7 @@ fn run_download_once(
         emit_line(app, job_id, "未识别站点，仍尝试用 yt-dlp 下载…");
     }
 
-    let mut cmd = Command::new(&bin);
+    let mut cmd = crate::background_command(&bin);
     for p in &prefix {
         cmd.arg(p);
     }
@@ -1757,7 +1794,7 @@ fn validate_playable_output(path: &Path, audio_only: bool) -> Result<(), String>
         return Ok(());
     }
     // Soft check via ffprobe when available: require a video stream.
-    let Ok(out) = Command::new(ffprobe_program())
+    let Ok(out) = crate::background_command(ffprobe_program())
         .args([
             "-v",
             "error",
@@ -1776,7 +1813,7 @@ fn validate_playable_output(path: &Path, audio_only: bool) -> Result<(), String>
     if !out.status.success() || String::from_utf8_lossy(&out.stdout).trim().is_empty() {
         return Err("成品缺少视频轨，下载可能不完整，请重试。".into());
     }
-    let audio = Command::new(ffprobe_program())
+    let audio = crate::background_command(ffprobe_program())
         .args([
             "-v",
             "error",

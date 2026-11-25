@@ -1,5 +1,7 @@
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+#[cfg(not(windows))]
+use std::process::Command;
+use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -158,7 +160,7 @@ fn dump_watch_page(
     let page_file = dir.join("page.html");
     let stdout_file =
         std::fs::File::create(&page_file).map_err(|e| format!("创建抖音页面输出失败: {e}"))?;
-    let mut cmd = Command::new(&bin);
+    let mut cmd = crate::background_command(&bin);
     cmd.arg("--headless=new")
         .arg("--disable-gpu")
         .arg("--disable-dev-shm-usage")
@@ -240,34 +242,78 @@ fn chrome_bin() -> Result<String, String> {
         "chromium",
         "chromium-browser",
         "chrome",
+        "msedge",
     ] {
         if command_exists(name) {
             return Ok(name.to_string());
         }
     }
-    for path in [
-        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-        "/Applications/Chromium.app/Contents/MacOS/Chromium",
-        "/usr/bin/google-chrome",
-        "/usr/bin/chromium",
-        "/usr/bin/chromium-browser",
-    ] {
-        if PathBuf::from(path).is_file() {
-            return Ok(path.to_string());
+    let mut paths = vec![
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome".to_string(),
+        "/Applications/Chromium.app/Contents/MacOS/Chromium".to_string(),
+        "/usr/bin/google-chrome".to_string(),
+        "/usr/bin/chromium".to_string(),
+        "/usr/bin/chromium-browser".to_string(),
+    ];
+    paths.extend(windows_browser_paths());
+    for path in paths {
+        if PathBuf::from(&path).is_file() {
+            return Ok(path);
         }
     }
-    Err("解析抖音需要本机的 Chrome 或 Chromium（未找到 google-chrome / chromium）".into())
+    Err("解析抖音需要本机的 Chrome、Chromium 或 Edge".into())
+}
+
+#[cfg(windows)]
+fn windows_browser_paths() -> Vec<String> {
+    let rels = [
+        r"Google\Chrome\Application\chrome.exe",
+        r"Chromium\Application\chrome.exe",
+        r"Microsoft\Edge\Application\msedge.exe",
+    ];
+    let mut roots = vec![
+        PathBuf::from(r"C:\Program Files"),
+        PathBuf::from(r"C:\Program Files (x86)"),
+    ];
+    for key in ["PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"] {
+        if let Some(value) = std::env::var_os(key) {
+            roots.push(PathBuf::from(value));
+        }
+    }
+    roots
+        .into_iter()
+        .flat_map(|root| rels.iter().map(move |rel| root.join(rel)))
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect()
+}
+
+#[cfg(not(windows))]
+fn windows_browser_paths() -> Vec<String> {
+    Vec::new()
 }
 
 fn command_exists(name: &str) -> bool {
-    Command::new("sh")
-        .arg("-c")
-        .arg(format!("command -v {name}"))
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    #[cfg(windows)]
+    {
+        crate::background_command("where.exe")
+            .arg(name)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+    #[cfg(not(windows))]
+    {
+        Command::new("sh")
+            .arg("-c")
+            .arg(format!("command -v {name}"))
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
 }
 
 fn kill_group(child: &mut std::process::Child) {
@@ -276,6 +322,14 @@ fn kill_group(child: &mut std::process::Child) {
     {
         let _ = Command::new("kill")
             .args(["-KILL", &format!("-{pid}")])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    #[cfg(windows)]
+    {
+        let _ = crate::background_command("taskkill")
+            .args(["/F", "/T", "/PID", &pid.to_string()])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();

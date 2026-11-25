@@ -97,7 +97,7 @@ fn url_host(url: &str) -> &str {
 fn is_missav_host(url_lower: &str) -> bool {
     matches!(
         url_host(url_lower),
-        "missav.ws" | "missav.com" | "missav.ai"
+        "missav.ws" | "missav.com" | "missav.ai" | "missav.live"
     )
 }
 
@@ -337,6 +337,14 @@ mod tests {
         );
         assert_eq!(detect_site("https://missav.ai/dm247/cn"), Site::Missav);
         assert_eq!(
+            detect_site("https://missav.live/cn/fc2-ppv-4218783"),
+            Site::Missav
+        );
+        assert_eq!(
+            detect_site("https://www.missav.live/cn/fc2-ppv-4218783"),
+            Site::Missav
+        );
+        assert_eq!(
             detect_site("https://example.com/missav.ws/x"),
             Site::Unknown
         );
@@ -350,6 +358,9 @@ mod tests {
         ));
         assert!(is_missav_single_video_url(
             "https://missav.com/fc2-ppv-4975133"
+        ));
+        assert!(is_missav_single_video_url(
+            "https://missav.live/cn/fc2-ppv-4218783"
         ));
         assert!(is_missav_single_video_url(
             "https://missav.ws/dm127/cn/mizd-357"

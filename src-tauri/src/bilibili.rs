@@ -307,8 +307,6 @@ mod tests {
     #[test]
     #[ignore]
     fn live_download_two_season_parts() {
-        use std::process::Command;
-
         let parts =
             try_expand_ugc_season_from_bv_url("https://www.bilibili.com/video/BV1NCgVzoEG9/")
                 .unwrap()
@@ -350,7 +348,7 @@ mod tests {
                 .join(format!("{}.%(ext)s", part.output_stem))
                 .to_string_lossy()
                 .into_owned();
-            let status = Command::new(&ytdlp)
+            let status = crate::background_command(&ytdlp)
                 .args([
                     "--newline",
                     "--no-playlist",

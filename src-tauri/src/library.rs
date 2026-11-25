@@ -1,6 +1,7 @@
 use serde::Serialize;
 use std::fs;
 use std::path::{Path, PathBuf};
+#[cfg(not(windows))]
 use std::process::Command;
 
 pub const UNCATEGORIZED: &str = "未分类";
@@ -428,7 +429,7 @@ pub fn open_video(path: &Path) -> Result<(), String> {
     }
     #[cfg(target_os = "windows")]
     {
-        Command::new("cmd")
+        crate::background_command("cmd")
             .args(["/C", "start", ""])
             .arg(&path)
             .spawn()

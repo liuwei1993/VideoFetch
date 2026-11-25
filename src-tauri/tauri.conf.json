@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "bash scripts/fetch-linux-sidecars.sh && npm run build",
+    "beforeBuildCommand": "node scripts/prepare-sidecars.mjs && npm run build",
     "frontendDist": "../dist"
   },
   "app": {

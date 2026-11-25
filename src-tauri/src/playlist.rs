@@ -3,7 +3,7 @@ use crate::settings::Settings;
 use crate::site;
 use serde::Serialize;
 use std::io::Read;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PlaylistItem {
@@ -74,7 +74,7 @@ pub fn expand_playlist(
     job_id: &str,
 ) -> Result<Vec<PlaylistItem>, String> {
     let (bin, prefix) = download::resolve_ytdlp()?;
-    let mut cmd = Command::new(&bin);
+    let mut cmd = crate::background_command(&bin);
     for p in &prefix {
         cmd.arg(p);
     }

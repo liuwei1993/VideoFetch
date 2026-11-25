@@ -7,6 +7,22 @@ mod queue;
 mod settings;
 mod site;
 
+/// Start a helper without a console window.
+///
+/// The release app is a GUI binary. On Windows, console tools such as yt-dlp,
+/// ffmpeg, and ffprobe would otherwise open a black command window for the
+/// whole run. Piped stdout and stderr still work.
+pub(crate) fn background_command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+    let mut cmd = std::process::Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
 use download::{StartDownloadArgs, StartDownloadResult};
 use queue::DownloadJob;
 use settings::Settings;

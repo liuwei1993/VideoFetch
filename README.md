@@ -25,7 +25,7 @@ npm run tauri dev
 
 ## 使用
 
-1. **下载**：粘贴链接，选择/新建分类，选清晰度（默认 720p），开始下载。支持 YouTube 频道/播放列表（如 `youtube.com/@handle/videos`、`/playlist?list=...`）以及 Bilibili 合集（`space.bilibili.com/.../lists/...?type=season`）：展开后批量下载，下载页显示每集状态。抖音支持单条视频（`douyin.com/video/<id>`、`iesdouyin.com/share/video/<id>`、`v.douyin.com` 短链，以及分享文案里的链接）；解析需要本机 Chrome / Chromium，清晰度 720 / 1080 / 最高 对应 720p 或 1080p。MissAV（`missav.ws` / `missav.com` / `missav.ai`）目前仅支持单视频链接，例如 `https://missav.ws/cn/<番号>`。  
+1. **下载**：粘贴链接，选择/新建分类，选清晰度（默认 720p），开始下载。支持 YouTube 频道/播放列表（如 `youtube.com/@handle/videos`、`/playlist?list=...`）以及 Bilibili 合集（`space.bilibili.com/.../lists/...?type=season`）：展开后批量下载，下载页显示每集状态。抖音支持单条视频（`douyin.com/video/<id>`、`iesdouyin.com/share/video/<id>`、`v.douyin.com` 短链，以及分享文案里的链接）；解析需要本机 Chrome / Chromium，清晰度 720 / 1080 / 最高 对应 720p 或 1080p。MissAV（`missav.ws` / `missav.com` / `missav.ai` / `missav.live`）目前仅支持单视频链接，例如 `https://missav.ws/cn/<番号>`。  
    若上次下载未完成（崩溃或强制退出），启动时会提示「继续 / 丢弃」。继续将跳过已完成项并用 yt-dlp 断点续传；丢弃会清除队列与临时文件。主动点「停止」不会提示恢复。  
 2. **库**：左侧分类，右侧视频；可打开、移动、删除。  
 3. **设置**：库根目录、默认清晰度、YouTube 代理、是否让 Bilibili 走代理、同时下载数（默认 5）。

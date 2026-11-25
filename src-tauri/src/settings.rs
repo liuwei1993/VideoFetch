@@ -52,7 +52,14 @@ pub fn expand_path(path: &str) -> PathBuf {
 }
 
 fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from)
+    for key in ["HOME", "USERPROFILE"] {
+        if let Some(home) = std::env::var_os(key) {
+            if !home.is_empty() {
+                return Some(PathBuf::from(home));
+            }
+        }
+    }
+    None
 }
 
 pub fn settings_path(app: &AppHandle) -> Result<PathBuf, String> {

@@ -7,7 +7,7 @@ from yt_dlp.utils import ExtractorError
 class MissAVIE(InfoExtractor):
     IE_NAME = 'missav'
     _VALID_URL = (
-        r'(?i)https?://(?:www\.)?missav\.(?:ws|com|ai)/'
+        r'(?i)https?://(?:www\.)?missav\.(?:ws|com|ai|live)/'
         r'(?:dm\d+/)?'
         r'(?:[a-z]{2,3}/)?(?P<id>[\w-]+)/?(?:[?#].*)?$'
     )
@@ -29,11 +29,11 @@ class MissAVIE(InfoExtractor):
         ):
             raise ExtractorError('Not a MissAV single video URL', expected=True)
 
-        # missav.ws is often behind a Cloudflare challenge; .ai serves the same pages.
+        # missav.ws / missav.live are often behind a Cloudflare challenge; .ai serves the same pages.
         # Drop the /dmNNN/ mirror prefix so the canonical watch path is requested.
         # The app passes `--impersonate Safari-18.0`; Chrome's fingerprint is blocked.
         page_url = re.sub(
-            r'(?i)^https?://(?:www\.)?missav\.(?:ws|com|ai)',
+            r'(?i)^https?://(?:www\.)?missav\.(?:ws|com|ai|live)',
             self._PAGE_HOST,
             url,
         )
